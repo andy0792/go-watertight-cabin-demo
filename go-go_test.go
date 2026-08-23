@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +16,7 @@ func resetFaultConfig() {
 	faultMu.Lock()
 	defer faultMu.Unlock()
 	faultConfig["营销舱"] = &CabinFaultConfig{Enable: false, FaultPercent: 0}
-	faultConfig["辅助舱-报表"] = &CabinFaultConfig{Enable: false, FaultPercent: 0}
+	faultConfig["报表辅助舱"] = &CabinFaultConfig{Enable: false, FaultPercent: 0}
 }
 
 // 简单：Reset重置
@@ -99,7 +99,6 @@ func TestSimpleErrGroup(t *testing.T) {
 // ===========新增：故障注入函数单元测试 shouldProduceFault ==========
 func TestShouldProduceFault(t *testing.T) {
 	resetFaultConfig()
-
 	// case1: 开关关闭，无论百分比，一定返回false
 	faultMu.Lock()
 	faultConfig["营销舱"].Enable = false
@@ -108,7 +107,6 @@ func TestShouldProduceFault(t *testing.T) {
 	if shouldProduceFault("营销舱") == true {
 		t.Error("开关关闭，不应该产生故障")
 	}
-
 	// case2: enable=true，FaultPercent=0 永不故障
 	faultMu.Lock()
 	faultConfig["营销舱"].Enable = true
@@ -117,7 +115,6 @@ func TestShouldProduceFault(t *testing.T) {
 	if shouldProduceFault("营销舱") == true {
 		t.Error("faultPercent=0，不应该产生故障")
 	}
-
 	// case3: enable=true，FaultPercent=100 每次必故障
 	faultMu.Lock()
 	faultConfig["营销舱"].Enable = true
@@ -126,12 +123,10 @@ func TestShouldProduceFault(t *testing.T) {
 	if shouldProduceFault("营销舱") == false {
 		t.Error("faultPercent=100，必须返回故障true")
 	}
-
 	// case4: 不存在的舱名，返回false
 	if shouldProduceFault("不存在舱") == true {
 		t.Error("不存在舱名返回false")
 	}
-
 	resetFaultConfig()
 }
 
@@ -142,7 +137,6 @@ func TestBizFuncs(t *testing.T) {
 	cabinMarketing.Reset()
 	cabinReport.Reset()
 	ctx := context.Background()
-
 	// 关闭全部故障，bizOrder永远成功
 	err := bizOrder(ctx, 1)
 	if err != nil {
@@ -153,24 +147,20 @@ func TestBizFuncs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bizMarketing fault off should return nil, err=%v", err)
 	}
-
 	// 报表舱故障关闭，业务正常
 	err = bizReport(ctx, 1)
 	if err != nil {
 		t.Fatalf("bizReport fault off should return nil, err=%v", err)
 	}
-
 	// 打开报表舱故障100%，调用bizReport必然报错
 	faultMu.Lock()
-	faultConfig["辅助舱-报表"].Enable = true
-	faultConfig["辅助舱-报表"].FaultPercent = 100
+	faultConfig["报表辅助舱"].Enable = true
+	faultConfig["报表辅助舱"].FaultPercent = 100
 	faultMu.Unlock()
-
 	err = bizReport(ctx, 999)
 	if err == nil {
 		t.Error("报表舱开启100%故障，bizReport应当返回error")
 	}
-
 	resetFaultConfig()
 }
 
@@ -299,6 +289,7 @@ func TestCabinReCreateLoseFallback(t *testing.T) {
 }
 
 // =========接口测试==========
+
 // TestApiStatus 接口测试：单独测试 /api/status
 func TestApiStatus(t *testing.T) {
 	resetFaultConfig()
@@ -324,7 +315,7 @@ func TestApiStatus(t *testing.T) {
 		t.Fatalf("expect 3 cabins, got %d", len(payload.Cabins))
 	}
 	// 校验FaultConfig字段存在
-	for _,v := range payload.Cabins {
+	for _, v := range payload.Cabins {
 		if v.Name == "营销舱" && v.FaultConfig == nil {
 			t.Error("营销舱FaultConfig不应该为nil")
 		}
@@ -334,15 +325,14 @@ func TestApiStatus(t *testing.T) {
 // TestApiSetFault 新增接口测试：/api/setFault 设置故障注入
 func TestApiSetFault(t *testing.T) {
 	resetFaultConfig()
-
 	// 正常设置：营销舱 enable=true faultPercent=100
 	bodyJson, _ := json.Marshal(map[string]any{
-		"cabin_name":"营销舱",
-		"enable":true,
-		"fault_percent":100,
+		"cabin_name":    "营销舱",
+		"enable":        true,
+		"fault_percent": 100,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/setFault", bytes.NewBuffer(bodyJson))
-	req.Header.Set("Content-Type","application/json")
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	apiSetFault(rec, req)
 	if rec.Result().StatusCode != 200 {
@@ -351,38 +341,35 @@ func TestApiSetFault(t *testing.T) {
 	faultMu.Lock()
 	cfg := faultConfig["营销舱"]
 	faultMu.Unlock()
-	if !cfg.Enable || cfg.FaultPercent !=100 {
+	if !cfg.Enable || cfg.FaultPercent != 100 {
 		t.Error("api setFault 配置没有生效")
 	}
-
 	// 测试非法百分比 101
-	badBody,_ := json.Marshal(map[string]any{
-		"cabin_name":"营销舱",
-		"enable":true,
-		"fault_percent":101,
+	badBody, _ := json.Marshal(map[string]any{
+		"cabin_name":    "营销舱",
+		"enable":        true,
+		"fault_percent": 101,
 	})
 	req2 := httptest.NewRequest(http.MethodPost, "/api/setFault", bytes.NewBuffer(badBody))
-	req2.Header.Set("Content-Type","application/json")
+	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	apiSetFault(rec2, req2)
-	if rec2.Result().StatusCode !=400 {
+	if rec2.Result().StatusCode != 400 {
 		t.Error("fault_percent=101应该返回400")
 	}
-
 	// 无效舱名
-	badBody2,_ := json.Marshal(map[string]any{
-		"cabin_name":"不存在舱",
-		"enable":true,
-		"fault_percent":50,
+	badBody2, _ := json.Marshal(map[string]any{
+		"cabin_name":    "不存在舱",
+		"enable":        true,
+		"fault_percent": 50,
 	})
 	req3 := httptest.NewRequest(http.MethodPost, "/api/setFault", bytes.NewBuffer(badBody2))
-	req3.Header.Set("Content-Type","application/json")
+	req3.Header.Set("Content-Type", "application/json")
 	rec3 := httptest.NewRecorder()
 	apiSetFault(rec3, req3)
-	if rec3.Result().StatusCode !=400 {
+	if rec3.Result().StatusCode != 400 {
 		t.Error("无效舱名应该返回400")
 	}
-
 	resetFaultConfig()
 }
 
@@ -398,6 +385,35 @@ func TestApiReset(t *testing.T) {
 	// reset接口调用后，校验熔断器回到Closed
 	if cabinOrder.cb.GetState() != StateClosed {
 		t.Error("after apiReset, cabinOrder should be Closed")
+	}
+}
+
+// TestApiClearLogs 测试新增接口 /api/clearLogs 仅清空日志，不改动舱状态指标
+func TestApiClearLogs(t *testing.T) {
+	//先写一点日志
+	onEventLog("测试日志1")
+	onEventLog("测试日志2")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/clearLogs", nil)
+	rec := httptest.NewRecorder()
+	apiClearLogs(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("apiClearLogs expect 200 got %d", resp.StatusCode)
+	}
+
+	logMu.Lock()
+	l := len(globalLogs)
+	logMu.Unlock()
+	// clearLogs内部会生成一条事件日志："日志已手动清空"，所以长度应为1
+	if l != 1 {
+		t.Errorf("globalLogs 清空后预期剩余1条提示日志，当前长度=%d", l)
+	}
+
+	//校验舱状态不受影响：熔断器状态、metrics完全不变
+	if cabinOrder.cb.GetState() != StateClosed {
+		t.Error("执行clearLogs不应该改变熔断器状态")
 	}
 }
 
@@ -419,7 +435,7 @@ func TestFullFlow_Integration(t *testing.T) {
 	if recRun1.Result().StatusCode != http.StatusOK {
 		t.Fatal("api runFirst failed")
 	}
-	// 3.等待熔断冷却窗口期
+	// 3.等待熔断恢复窗口期
 	reqWait := httptest.NewRequest(http.MethodPost, "/api/waitHalfOpen", nil)
 	recWait := httptest.NewRecorder()
 	apiWaitHalfOpen(recWait, reqWait)
@@ -456,6 +472,5 @@ func TestFullFlow_Integration(t *testing.T) {
 	}
 	t.Logf("集成测试结束，营销舱状态=%s，降级次数=%d",
 		marketingCabinView.State, marketingCabinView.Metrics.DegradeCount)
-
 	resetFaultConfig()
 }

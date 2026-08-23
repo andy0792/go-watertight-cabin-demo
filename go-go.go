@@ -294,7 +294,7 @@ func shouldProduceFault(cabinName string) bool {
 
 func bizOrder(ctx context.Context, orderID int) error {
 	time.Sleep(100 * time.Millisecond)
-	fmt.Printf(colorGreen+"[核心舱-下单] order=%d SUCCESS"+colorReset+"\n", orderID)
+	fmt.Printf(colorGreen+"[下单核心舱] order=%d SUCCESS"+colorReset+"\n", orderID)
 	return nil
 }
 
@@ -309,10 +309,10 @@ func bizMarketing(ctx context.Context, actID int) error {
 
 func bizReport(ctx context.Context, reportID int) error {
 	time.Sleep(2 * time.Second)
-	if shouldProduceFault("辅助舱-报表") {
+	if shouldProduceFault("报表辅助舱") {
 		return errors.New("report slow sql fail")
 	}
-	fmt.Printf(colorGreen+"[辅助舱-报表] report=%d ok"+colorReset+"\n", reportID)
+	fmt.Printf(colorGreen+"[报表辅助舱] report=%d ok"+colorReset+"\n", reportID)
 	return nil
 }
 
@@ -339,6 +339,9 @@ type CabinView struct {
 	Metrics     CabinMetrics      `json:"metrics"`
 	Config      CabinConfig       `json:"config"`
 	FaultConfig *CabinFaultConfig `json:"fault_config,omitempty"`
+	//====新增熔断器窗口内部统计====
+	CbWindowSuccess uint64 `json:"cb_window_success"`
+	CbWindowFail    uint64 `json:"cb_window_fail"`
 }
 
 func getCabinConfig(c *BusinessCabin) CabinConfig {
@@ -363,24 +366,30 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 
 	list := []CabinView{
 		{
-			Name:    cabinOrder.name,
-			State:   cabinOrder.cb.GetState().String(),
-			Metrics: cabinOrder.metrics,
-			Config:  getCabinConfig(cabinOrder),
+			Name:            cabinOrder.name,
+			State:           cabinOrder.cb.GetState().String(),
+			Metrics:         cabinOrder.metrics,
+			Config:          getCabinConfig(cabinOrder),
+			CbWindowSuccess: cabinOrder.cb.successCount.Load(),
+			CbWindowFail:    cabinOrder.cb.failureCount.Load(),
 		},
 		{
-			Name:        cabinMarketing.name,
-			State:       cabinMarketing.cb.GetState().String(),
-			Metrics:     cabinMarketing.metrics,
-			Config:      getCabinConfig(cabinMarketing),
-			FaultConfig: getFault("营销舱"),
+			Name:            cabinMarketing.name,
+			State:           cabinMarketing.cb.GetState().String(),
+			Metrics:         cabinMarketing.metrics,
+			Config:          getCabinConfig(cabinMarketing),
+			FaultConfig:     getFault("营销舱"),
+			CbWindowSuccess: cabinMarketing.cb.successCount.Load(),
+			CbWindowFail:    cabinMarketing.cb.failureCount.Load(),
 		},
 		{
-			Name:        cabinReport.name,
-			State:       cabinReport.cb.GetState().String(),
-			Metrics:     cabinReport.metrics,
-			Config:      getCabinConfig(cabinReport),
-			FaultConfig: getFault("辅助舱-报表"),
+			Name:            cabinReport.name,
+			State:           cabinReport.cb.GetState().String(),
+			Metrics:         cabinReport.metrics,
+			Config:          getCabinConfig(cabinReport),
+			FaultConfig:     getFault("报表辅助舱"),
+			CbWindowSuccess: cabinReport.cb.successCount.Load(),
+			CbWindowFail:    cabinReport.cb.failureCount.Load(),
 		},
 	}
 
@@ -562,6 +571,16 @@ func apiRunSecond(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
+// apiClearLogs 仅清空日志，不修改任何舱、熔断器、metrics状态
+func apiClearLogs(w http.ResponseWriter, r *http.Request) {
+	logMu.Lock()
+	globalLogs = []string{}
+	logMu.Unlock()
+	onEventLog("日志已手动清空")
+	w.Header().Set("Content-Type", "application/json;charset=utf-8")
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
 // 【重点】全部用普通减号 -，无隐形软连字符
 const pageHTML = `
 <!DOCTYPE html>
@@ -595,12 +614,31 @@ button:hover{opacity:0.88;}
 .btn-red{background:#f53f3f;color:#fff;}
 .btn-gray{background:#86909c;color:#fff;}
 .btn-blue{background:#4080ff;color:#fff;}
+.btn-preset{background:#722ed1;color:#fff;}
 #logPanel{background:#1d2129;color:#c9cdd4;border-radius:8px;padding:12px;height:220px;overflow:auto;font-family:"Menlo","Consolas",monospace;font-size:12px;margin-top:16px;}
 .log-line{padding:2px 0;}
 #batchTip{margin-top:8px;font-size:12px;color:#86909c;white-space:pre-line;line-height:1.6;}
 .footer{margin-top:28px;padding-top:14px;border-top:1px solid #e5e6eb;text-align:center;}
 .footer a{display:inline-flex;align-items:center;gap:6px;color:#86909c;text-decoration:none;}
 .footer svg{fill:#86909c;}
+.action-bar-group{margin-bottom:8px;}
+.group-tip{font-size:12px;color:#6b7785;margin-bottom:6px;}
+.action-bar{background:#ffffff;padding:14px 18px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,0.06);display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+/* 舱卡片状态大背景色块，浅色不刺眼 */
+.cabin.bg-state-closed {
+    background-color: #e8f5e9; /* 浅绿 Closed */
+}
+.cabin.bg-state-halfopen {
+    background-color: #fff9c4; /* 浅黄 HalfOpen */
+}
+.cabin.bg-state-open {
+    background-color: #ffebee; /* 浅红 Open */
+}
+button:disabled {
+    opacity:0.45 !important;
+    cursor: not-allowed;
+}
+
 </style>
 </head>
 <body>
@@ -608,27 +646,50 @@ button:hover{opacity:0.88;}
 <h1>软件水密隔舱演示（限流 + 熔断 + 降级 + 故障注入）</h1>
 <div class="desc-text">
 说明：各业务独立隔离舱，信号量控制最大并发；失败占比超标触发熔断器。
-<br>熔断状态流转：Closed正常(允许访问) → Open熔断断开(拒绝访问) → HalfOpen试探恢复(小流量测试) → Closed正常(恢复访问)
-<br>👉演示【核心仓-下单】限流: ✔核心舱最大并发改成 2 个；发起第一轮批量请求。
-<br>👉演示【辅助仓-报表】熔断: ✔开启模拟业务故障，点设置故障；发起第一轮批量请求。
-<br>👉演示【营销舱】降级:
-<br>✔营销舱熔断冷却时间改成 30 秒；
-<br>✔开启模拟业务故障，故障 %=100，点设置故障；
-<br>✔请求打到红色 Open 熔断后，**禁止点重置**，再次发请求，观察降级次数上涨。
+<br>✅熔断状态流转：Closed正常(允许访问) → Open熔断断开(拒绝访问) → HalfOpen试探恢复(小流量测试) → Closed正常(恢复访问)。
+<br>📌演示指引：<br/>
+👉▶场景A‑限流压力测试【下单核心舱】：观察限流拒绝计数，体验信号量隔离。<br/>
+👉▶场景B‑营销舱熔断+降级演示【营销舱】：故障触发熔断器进入Open，观察「降级次数」上涨。<br/>
+👉▶场景C‑报表辅助舱故障隔离【报表辅助舱】：故障触发熔断，无降级兜底，观察「熔断拒绝」上涨。<br/>
+✅操作顺序：点击场景按钮完成配置 → 点击「发起第一轮批量请求」产生流量，观察面板指标。<br/>
+💡提示：需要足够请求量把熔断器打入Open状态，才会触发降级/熔断拒绝。<br/>
+⚠️熔断器变为红色Open状态后，请勿点击重置；继续发起请求观察保护效果。
 </div>
 </div>
-<div class="action-bar">
-<button class="btn-green" onclick="runFirst()">① 发起第一轮批量请求</button>
-<button class="btn-yellow" onclick="waitHalf()">② 等待熔断恢复窗口期</button>
-<button class="btn-red" onclick="runSecond()">③ 发起第二轮试探请求</button>
-<button class="btn-gray" onclick="resetAll()">④ 重置所有舱状态</button>
+
+<div class="action-bar-group">
+    <div class="group-tip">📋 ①选择演示场景：点击自动配置参数与故障注入</div>
+    <div class="action-bar">
+        <button class="btn-preset" onclick="sceneA()">场景A‑限流压力测试</button>
+        <button class="btn-preset" onclick="sceneB()">场景B‑营销舱熔断+降级演示</button>
+        <button class="btn-preset" onclick="sceneC()">场景C‑报表辅助舱故障隔离</button>
+    </div>
 </div>
+
+<div class="action-bar-group">
+    <div class="group-tip">⚙️ ②执行流量操作</div>
+    <div class="action-bar">
+        <button class="btn-green" onclick="runFirst()">① 发起第一轮批量请求</button>
+        <button class="btn-yellow" onclick="waitHalf()">② 等待熔断恢复窗口期</button>
+        <button class="btn-red" onclick="runSecond()">③ 发起第二轮试探请求</button>
+        <button class="btn-gray" onclick="resetAll()">④ 重置所有舱状态</button>
+    </div>
+    <div class="group-note">💡重置：清空全部指标、恢复所有舱初始状态，熔断器状态一并清零</div>
+</div>
+
 
 <div id="container"></div>
-
+<div style="display:flex;gap:10px;align-items:center;margin-top:16px;margin-bottom:8px;">
+    <button class="btn-red" onclick="clearLogBtnClick()">清空日志</button>
+    <label style="font-size:13px;color:#4e5969;">日志过滤:</label>
+    <select id="logFilterSel" style="padding:6px 8px;border-radius:5px;border:1px solid #dcdfe6;font-size:13px;">
+        <option value="all">全部日志</option>
+        <option value="circuit">仅熔断器事件</option>
+        <option value="fallback">仅降级事件</option>
+    </select>
+</div>
 <div id="logPanel"></div>
 <div id="batchTip"></div>
-
 <div class="footer">
 <a href="https://github.com/andy0792" target="_blank" rel="noopener noreferrer">
 <svg height="20" width="20" viewBox="0 0 16 16">
@@ -636,11 +697,52 @@ button:hover{opacity:0.88;}
 </svg>
 </a>
 </div>
-
 <script>
 let lastCabinList = [];
 let localCabinsConfig = [];
 let localFaultConfig = [];
+//====新增====
+let isRunning = false;
+let logFilterMode = "all"; // all / circuit / fallback 
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function clearLogBtnClick(){
+    await fetch("/api/clearLogs",{method:"POST"});
+    await fetchStatus();
+}
+
+function setButtonsDisabled(disabled) {
+    // 获取所有需要置灰的按钮：场景按钮 + 流量操作按钮
+    const btns = document.querySelectorAll(
+        '.action-bar button.btn-preset, .action-bar button.btn-green, .action-bar button.btn-yellow, .action-bar button.btn-red'
+    );
+    for(const b of btns){
+        b.disabled = disabled;
+    }
+}
+
+
+/**
+ * 根据熔断器状态返回对应的css class名称
+ * @param {string} state 后端返回状态字符串 Closed / HalfOpen / Open
+ * @returns {string} css类名
+ */
+function getCabinStateBgClass(state) {
+    switch(state) {
+        case "Closed":
+            return "bg-state-closed";
+        case "HalfOpen":
+            return "bg-state-halfopen";
+        case "Open":
+            return "bg-state-open";
+        default:
+            return "";
+    }
+}
+
 function getShowState(rawState){
     switch(rawState){
         case "Closed": return "Closed正常（允许访问）";
@@ -670,24 +772,44 @@ function initLocalConfig(list){
         }
     }
 }
+
 function renderAllLogs(logs){
     const panel = document.getElementById("logPanel");
     panel.innerHTML = "";
-    for(let i=0;i<logs.length;i++){
+
+    let filtered = [];
+    for(let line of logs){
+        if(logFilterMode === "all"){
+            filtered.push(line);
+        }else if(logFilterMode === "circuit"){
+            //熔断器事件关键词：熔断器切换 / 半开试探
+            if(line.includes("熔断器切换") || line.includes("半开试探")){
+                filtered.push(line);
+            }
+        }else if(logFilterMode === "fallback"){
+            //降级事件关键词：触发降级兜底
+            if(line.includes("触发降级兜底")){
+                filtered.push(line);
+            }
+        }
+    }
+
+    for(let i=0;i<filtered.length;i++){
         let div = document.createElement("div");
         div.className="log-line";
-        div.innerText = logs[i];
+        div.innerText = filtered[i];
         panel.appendChild(div);
     }
     panel.scrollTop = panel.scrollHeight;
 }
+
 function rebuildCabinsDOM(list){
 	let html="";
 	for(let idx=0;idx<list.length;idx++){
 		const c = list[idx];
 		let cls="state-"+c.state;
 		let showText = getShowState(c.state);
-		html += '<div class="cabin">';
+		html += '<div class="cabin cabin-card" data-cabin-name="' + c.name + '">';
 		html += '<h3>' + c.name + ' <span class="' + cls + '">' + showText + '</span></h3>';
         html += '<div class="metric-grid">';
 		html += '<div class="metric-item" data-key="total">总任务: ' + c.metrics.total_task + '</div>';
@@ -696,6 +818,7 @@ function rebuildCabinsDOM(list){
 		html += '<div class="metric-item" data-key="cbReject">熔断拒绝: ' + c.metrics.cb_reject + '</div>';
 		html += '<div class="metric-item" data-key="bizErr">业务报错: ' + c.metrics.business_error + '</div>';
 		html += '<div class="metric-item" data-key="degrade">降级次数: ' + c.metrics.degrade_count + '</div>';
+		html += '<div class="metric-item" data-key="cbstat">窗口统计：成功:-- 失败:-- 当前失败占比:--</div>';
         html += '</div>';
 		html += '<div class="cfg-row">';
 		html += '<label>最大并发:</label><input type="number" id="maxc_'+idx+'" value="'+c.config.max_concurrency+'">';
@@ -747,18 +870,36 @@ async function fetchStatus(){
             const c = list[idx];
             const cabinDom = document.querySelector('.cabin:nth-child('+(idx+1)+')');
             if(!cabinDom) continue;
+            // ==========【1. 这里先粘贴你的窗口统计计算代码】==========
+            const winSucc = c.cb_window_success;
+            const winFail = c.cb_window_fail;
+            const winTotal = winSucc + winFail;
+            let failRateStr = "--";
+            if(winTotal > 0){
+                const rate = Math.round(winFail * 100 / winTotal);
+                failRateStr = rate + "%";
+            }
+            // ========================================================
+            // =========👉【在这里粘贴新增的 4 行色块代码】=========
+            cabinDom.classList.remove("bg-state-closed","bg-state-halfopen","bg-state-open");
+            const bgCls = getCabinStateBgClass(c.state);
+            if(bgCls){
+                cabinDom.classList.add(bgCls);
+            }
+            // ====================================================
             let cls="state-"+c.state;
             let showText = getShowState(c.state);
             cabinDom.querySelector("h3 span").className = cls;
             cabinDom.querySelector("h3 span").innerText = showText;
-
             cabinDom.querySelector('[data-key="total"]').innerText = "总任务: "+c.metrics.total_task;
             cabinDom.querySelector('[data-key="success"]').innerText = "成功: "+c.metrics.success;
             cabinDom.querySelector('[data-key="limitReject"]').innerText = "限流拒绝: "+c.metrics.limit_reject;
             cabinDom.querySelector('[data-key="cbReject"]').innerText = "熔断拒绝: "+c.metrics.cb_reject;
             cabinDom.querySelector('[data-key="bizErr"]').innerText = "业务报错: "+c.metrics.business_error;
             cabinDom.querySelector('[data-key="degrade"]').innerText = "降级次数: "+c.metrics.degrade_count;
-
+            // ============【补上缺失的这一行！！】============
+            cabinDom.querySelector('[data-key="cbstat"]').innerText = "窗口统计：成功:"+winSucc+" 失败:"+winFail+" 当前失败占比:"+failRateStr;
+            // ==============================================
             const maxcInput = document.getElementById("maxc_"+idx);
             const failpInput = document.getElementById("failp_"+idx);
             const winInput = document.getElementById("win_"+idx);
@@ -768,7 +909,6 @@ async function fetchStatus(){
             if(document.activeElement !== failpInput) failpInput.value = localCfg.FailThreshold;
             if(document.activeElement !== winInput) winInput.value = localCfg.WindowSize;
             if(document.activeElement !== waitInput) waitInput.value = localCfg.OpenWaitSec;
-
             const localFault = localFaultConfig[idx];
             if(localFault){
                 const chkEnable = document.getElementById("fault-enable-"+idx);
@@ -784,7 +924,7 @@ async function fetchStatus(){
 		renderAllLogs(payload.logs);
 		const fb = payload.first_batch;
 		const sb = payload.second_batch;
-		document.getElementById("batchTip").innerText = "【第一轮批量请求】核心舱-下单:" + fb.order + "个，营销舱:" + fb.marketing + "个，辅助舱-报表:" + fb.report + "个 \n【第二轮试探请求】报表舱:" + sb.report + "个";
+		document.getElementById("batchTip").innerText = "【第一轮批量请求】下单核心舱:" + fb.order + "个，营销舱:" + fb.marketing + "个，报表辅助舱:" + fb.report + "个 \n【第二轮试探请求】报表辅助舱:" + sb.report + "个";
 	}catch(e){
 		console.error("fetchStatus error",e);
 	}
@@ -806,9 +946,143 @@ async function applyCfg(idx){
 	});
 	await fetchStatus();
 }
-async function runFirst(){await fetch("/api/runFirst");await fetchStatus();}
-async function waitHalf(){await fetch("/api/waitHalfOpen");await fetchStatus();}
-async function runSecond(){await fetch("/api/runSecond");await fetchStatus();}
+
+// ---------------------- 一键场景 ----------------------
+async function sceneA(){
+    if(isRunning) return;
+    isRunning = true;
+    setButtonsDisabled(true);
+    try{
+        // 场景A‑限流压力测试：核心舱最大并发=2，关闭全部故障
+        await fetch("/api/reset");
+        // index0 核心舱‑下单
+        await fetch("/api/applyConfig",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({index:0,cfg:{max_concurrency:2,fail_threshold:50,window_size:40,open_wait_sec:1}})
+        });
+        // 关闭营销舱故障
+        await fetch("/api/setFault",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"营销舱",enable:false,fault_percent:0})
+        });
+        // 关闭报表辅助舱故障
+        await fetch("/api/setFault",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"报表辅助舱",enable:false,fault_percent:0})
+        });
+        await fetchStatus();
+    }finally{
+        isRunning = false;
+        setButtonsDisabled(false);
+    }
+}
+
+async function sceneB(){
+    if(isRunning) return;
+    isRunning = true;
+    setButtonsDisabled(true);
+    try{
+        // 场景B‑营销舱熔断+降级演示：营销舱冷却30s，故障100%
+        await fetch("/api/reset");
+        // index1 营销舱
+        await fetch("/api/applyConfig",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({index:1,cfg:{max_concurrency:40,fail_threshold:50,window_size:40,open_wait_sec:30}})
+        });
+        // 营销舱故障100%
+        await fetch("/api/setFault",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"营销舱",enable:true,fault_percent:100})
+        });
+        // 报表辅助舱关闭故障
+        await fetch("/api/setFault",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"报表辅助舱",enable:false,fault_percent:0})
+        });
+        await fetchStatus();
+    }finally{
+        isRunning = false;
+        setButtonsDisabled(false);
+    }
+}
+
+async function sceneC(){
+    if(isRunning) return;
+    isRunning = true;
+    setButtonsDisabled(true);
+    try{
+        // 场景C‑报表辅助舱故障隔离：报表辅助舱并发5，阈值30，窗口20，冷却2s；故障100%
+        await fetch("/api/reset");
+        // index2 报表辅助舱 更新舱参数
+        await fetch("/api/applyConfig",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({index:2,cfg:{max_concurrency:5,fail_threshold:30,window_size:20,open_wait_sec:2}})
+        });
+        // 报表辅助舱故障100%开启
+        await fetch("/api/setFault",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"报表辅助舱",enable:true,fault_percent:100})
+        });
+        // 营销舱关闭故障
+        await fetch("/api/setFault",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"营销舱",enable:false,fault_percent:0})
+        });
+        await fetchStatus();
+    }finally{
+        isRunning = false;
+        setButtonsDisabled(false);
+    }
+}
+
+async function runFirst(){
+    if(isRunning) return;
+    isRunning = true;
+    setButtonsDisabled(true);
+    try{
+        await fetch("/api/runFirst");
+        await fetchStatus();
+    }finally{
+        isRunning = false;
+        setButtonsDisabled(false);
+    }
+}
+
+async function waitHalf(){
+    if(isRunning) return;
+    isRunning = true;
+    setButtonsDisabled(true);
+    try{
+        await fetch("/api/waitHalfOpen");
+        await fetchStatus();
+    }finally{
+        isRunning = false;
+        setButtonsDisabled(false);
+    }
+}
+
+async function runSecond(){
+    if(isRunning) return;
+    isRunning = true;
+    setButtonsDisabled(true);
+    try{
+        await fetch("/api/runSecond");
+        await fetchStatus();
+    }finally{
+        isRunning = false;
+        setButtonsDisabled(false);
+    }
+}
+
 async function resetAll(){
 	await fetch("/api/reset");
 	await fetchStatus();
@@ -816,7 +1090,13 @@ async function resetAll(){
 window.onload = async function(){
     await fetchStatus();
     setInterval(fetchStatus, 800);
+    //绑定过滤下拉事件
+    document.getElementById("logFilterSel").onchange = function(){
+        logFilterMode = this.value;
+        fetchStatus(); //重新拉取并渲染日志
+    }
 };
+
 </script>
 </body>
 `
@@ -828,14 +1108,14 @@ func indexHTML(w http.ResponseWriter, r *http.Request) {
 
 func init() {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
-	cabinOrder = NewCabin("核心舱-下单", 20, NewCircuitBreaker(50, 40, 1*time.Second))
+	cabinOrder = NewCabin("下单核心舱", 20, NewCircuitBreaker(50, 40, 1*time.Second))
 	cabinMarketing = NewCabin("营销舱", 40, NewCircuitBreaker(50, 40, 1*time.Second))
-	cabinReport = NewCabin("辅助舱-报表", 8, NewCircuitBreaker(40, 30, 1*time.Second))
+	cabinReport = NewCabin("报表辅助舱", 8, NewCircuitBreaker(40, 30, 1*time.Second))
 	cabinMarketing.fallback = marketingFallback
 
 	faultConfig = make(map[string]*CabinFaultConfig)
 	faultConfig["营销舱"] = &CabinFaultConfig{Enable: false, FaultPercent: 30}
-	faultConfig["辅助舱-报表"] = &CabinFaultConfig{Enable: false, FaultPercent: 66}
+	faultConfig["报表辅助舱"] = &CabinFaultConfig{Enable: false, FaultPercent: 66}
 }
 
 func main() {
@@ -847,6 +1127,7 @@ func main() {
 	http.HandleFunc("/api/waitHalfOpen", apiWaitHalfOpen)
 	http.HandleFunc("/api/runSecond", apiRunSecond)
 	http.HandleFunc("/api/setFault", apiSetFault)
+	http.HandleFunc("/api/clearLogs", apiClearLogs)
 
 	onEventLog("演示程序已启动")
 	fmt.Println("网页演示已启动，请浏览器打开：http://127.0.0.1:8080")
