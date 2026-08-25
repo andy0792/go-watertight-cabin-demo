@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>软件水密隔舱 可视化演示</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:#f7f8fa;color:#1f2329;max-width:1300px;margin:0 auto;padding:24px;line-height:1.55;}
+.page-header{margin-bottom:20px;}
+.page-header h1{font-size:22px;font-weight:600;color:#1f2329;margin-bottom:8px;}
+.desc-text{color:#6b7785;font-size:13px;line-height:1.6;}
+.group-note{color:#6b7785;font-size:13px;line-height:1.6;}
+.action-bar{background:#ffffff;padding:14px 18px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,0.06);margin-bottom:18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+.cabin{background:#ffffff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:18px 20px;margin-bottom:14px;border:1px solid #e5e6eb;}
+.cabin h3{font-size:16px;font-weight:600;display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+.state-Closed{background-color:#e8f7ee;color:#00875a;font-size:12px;padding:3px 9px;border-radius:16px;font-weight:500;}
+.state-Open{background-color:#ffe9e9;color:#d93025;font-size:12px;padding:3px 9px;border-radius:16px;font-weight:500;}
+.state-HalfOpen{background-color:#fff7e6;color:#ff7d00;font-size:12px;padding:3px 9px;border-radius:16px;font-weight:500;}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(120px,1fr));gap:8px;margin-bottom:14px;}
+.metric-item{background:#f7f8fa;padding:10px 8px;border-radius:6px;font-size:13px;color:#4e5969;display:flex;align-items:center;min-height:36px;}
+.cfg-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;padding-top:12px;border-top:1px solid #f0f0f0;}
+.cfg-row label{font-size:13px;color:#4e5969;}
+.cfg-row input{width:110px;padding:6px 8px;border:1px solid #dcdfe6;border-radius:5px;font-size:13px;background:#fff;color:#1f2329;transition:border .2s;}
+.cfg-row input:focus{outline:none;border-color:#4080ff;box-shadow:0 0 0 2px rgba(64,128,255,0.15);}
+.fault-row{font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:10px;border-top:1px solid #f0f0f0;}
+button{padding:8px 14px;border-radius:5px;border:none;font-size:13px;font-weight:500;cursor:pointer;transition:opacity 0.2s;}
+button:hover{opacity:0.88;}
+.btn-green{background:#00b42a;color:#fff;}
+.btn-yellow{background:#ff7d00;color:#fff;}
+.btn-red{background:#f53f3f;color:#fff;}
+.btn-gray{background:#86909c;color:#fff;}
+.btn-blue{background:#4080ff;color:#fff;}
+.btn-preset{background:#722ed1;color:#fff;}
+#logPanel{background:#1d2129;color:#c9cdd4;border-radius:8px;padding:12px;height:220px;overflow:auto;font-family:"Menlo","Consolas",monospace;font-size:12px;margin-top:16px;}
+.log-line{padding:2px 0;}
+#batchTip{margin-top:8px;font-size:12px;color:#86909c;white-space:pre-line;line-height:1.6;}
+.footer{margin-top:28px;padding-top:14px;border-top:1px solid #e5e6eb;text-align:center;}
+.footer a{display:inline-flex;align-items:center;gap:6px;color:#86909c;text-decoration:none;}
+.footer svg{fill:#86909c;}
+.action-bar-group{margin-bottom:8px;}
+.group-tip{font-size:12px;color:#6b7785;margin-bottom:6px;}
+.action-bar{background:#ffffff;padding:14px 18px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,0.06);display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+.cabin.bg-state-closed { background-color: #e8f5e9; }
+.cabin.bg-state-halfopen { background-color: #fff9c4; }
+.cabin.bg-state-open { background-color: #ffebee; }
+button:disabled { opacity:0.45 !important; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<div class="page-header">
+<h1>软件水密隔舱演示（限流 + 熔断 + 降级 + 故障注入）</h1>
+<div class="desc-text">
+💡说明：各业务独立隔离舱，信号量控制最大并发；失败占比超标触发熔断器。<br/>
+💡提示：需要足够请求量把熔断器打入Open状态，才会触发降级/熔断拒绝。<br/>
+✅熔断状态流转：Closed正常(允许访问) → Open熔断断开(拒绝访问) → HalfOpen试探恢复(小流量测试) → Closed正常(恢复访问)。<br/>
+▶场景A‑限流挡流量：【下单核心舱】演示限流。<br/>
+▶场景B‑降级保自己：【营销舱】演示熔断+降级，降级保自己。<br/>
+▶场景C‑熔断防雪崩：【报表辅助舱】演示熔断，熔断断下游，防下游雪崩。<br/>
+📌操作顺序：点击场景按钮完成配置 → 点击「发起第一轮批量请求」产生流量，观察面板指标。<br/>
+</div>
+</div>
+
+<div class="action-bar-group">
+    <div class="group-tip">📋 ①选择演示场景：点击自动配置参数与故障注入</div>
+    <div class="action-bar">
+        <button class="btn-preset" onclick="sceneA()">场景A‑限流挡流量</button>
+        <button class="btn-preset" onclick="sceneB()">场景B‑降级保自己（熔断+降级）</button>
+        <button class="btn-preset" onclick="sceneC()">场景C‑熔断防雪崩</button>
+    </div>
+</div>
+
+<div class="action-bar-group">
+    <div class="group-tip">⚙️ ②执行流量操作</div>
+    <div class="action-bar">
+        <button class="btn-green" onclick="runFirst()">① 发起第一轮批量请求</button>
+        <button class="btn-yellow" onclick="waitHalf()">② 等待熔断恢复窗口期</button>
+        <button class="btn-red" onclick="runSecond()">③ 发起第二轮试探请求</button>
+        <button class="btn-gray" onclick="resetAll()">④ 重置所有舱状态</button>
+        <button class="btn-blue" onclick="resetMetricsOnly()">仅重置指标(保留熔断器状态)</button>
+    </div>
+    <div class="group-note">💡重置所有舱：清空全部指标、恢复所有舱初始状态，熔断器状态一并清零；「仅重置指标」只清空业务指标与日志，熔断器状态保持不变</div>
+</div>
+
+<div id="container"></div>
+
+<!-- 时序事件可视化区块 -->
+<div style="margin:12px 0;">
+    <h4>时序事件可视化</h4>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:6px;">
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#67c23a;"></span> 正常</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#e6a23c;"></span> 限流拒绝</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#f56c6c;"></span> 熔断打开</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#409eff;"></span> 半开试探</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#909399;"></span> 降级</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#ff4d4f;"></span> 业务报错</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#9b59b6;"></span> 配置变更</span>
+    </div>
+    <canvas id="timelineCanvas" width="900" height="320" style="border:1px solid #eee;display:block;"></canvas>
+</div>
+
+<!-- Canvas时序图下方：清空日志 + 过滤下拉（联动Canvas+日志） -->
+<div style="display:flex;gap:10px;align-items:center;margin-top:16px;margin-bottom:8px;">
+    <button class="btn-red" onclick="clearLogBtnClick()">清空日志</button>
+    <label for="logFilterSel" style="font-size:13px;color:#4e5969;">过滤(日志+时序图):</label>
+    <select id="logFilterSel" style="padding:6px 8px;border-radius:5px;border:1px solid #dcdfe6;font-size:13px;">
+        <option value="all">全部事件</option>
+        <option value="normal">仅正常</option>
+        <option value="reject">仅限流拒绝</option>
+        <option value="open">仅熔断打开</option>
+        <option value="halfOpen">仅半开试探</option>
+        <option value="fallback">仅降级</option>
+        <option value="error">仅业务报错</option>
+        <option value="config">仅配置变更</option>
+    </select>
+</div>
+
+<div id="logPanel"></div>
+<div id="batchTip"></div>
+<div class="footer">
+<a href="https://github.com/andy0792" target="_blank" rel="noopener noreferrer">
+<svg height="20" width="20" viewBox="0 0 16 16">
+<path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+</svg>
+</a>
+</div>
+<script>
+let lastCabinList = [];
+let localCabinsConfig = [];
+let localFaultConfig = [];
+let isRunning = false;
+let logFilterMode = "all";
+
+let eventList = [];
+const colorMap = {
+    normal:"#67c23a",
+    reject:"#e6a23c",
+    open:"#f56c6c",
+    halfOpen:"#409eff",
+    fallback:"#909399",
+    error:"#ff4d4f",
+    config:"#9b59b6"
+};
+const typeLabelMap = {
+    normal:"正常", reject:"限流拒绝", open:"熔断打开",
+    halfOpen:"半开试探", fallback:"降级", error:"业务报错", config:"配置变更"
+};
+
+// ========== 聚合显示阈值 ==========
+const MAX_STACK_COUNT = 6; // 同一时刻超过此数量则显示聚合气泡
+
+/**
+ * 时间格式化：ms → s → m s
+ */
+function formatTimeLabel(ms) {
+    if (ms < 0) return "0ms";
+    if (ms < 10000) return Math.round(ms) + "ms";
+    if (ms < 60000) return (ms / 1000).toFixed(1) + "s";
+    var minutes = Math.floor(ms / 60000);
+    var seconds = Math.floor((ms % 60000) / 1000);
+    if (seconds === 0) return minutes + "m";
+    return minutes + "m " + seconds + "s";
+}
+
+/**
+ * 自适应步长算法（1-2-5 序列）
+ */
+function calcAdaptiveStep(maxTimeMs, canvasPlotWidth) {
+    var MIN_LABEL_GAP_PX = 80;
+    var maxTicks = Math.max(2, Math.floor(canvasPlotWidth / MIN_LABEL_GAP_PX));
+    var niceSteps = [];
+    var bases = [1, 2, 5];
+    for (var exp = -1; exp <= 6; exp++) {
+        var multiplier = Math.pow(10, exp);
+        for (var bi = 0; bi < bases.length; bi++) {
+            var step = bases[bi] * multiplier * 1000;
+            if (step >= 100) niceSteps.push(step);
+        }
+    }
+    var bestStep = niceSteps[0];
+    var bestScore = 999999;
+    for (var i = 0; i < niceSteps.length; i++) {
+        var s = niceSteps[i];
+        var tickCount = Math.ceil(maxTimeMs / s);
+        if (tickCount >= 2 && tickCount <= maxTicks + 2) {
+            var score = Math.abs(tickCount - Math.floor(maxTicks / 2));
+            if (score < bestScore) { bestScore = score; bestStep = s; }
+        }
+    }
+    var finalCount = Math.ceil(maxTimeMs / bestStep);
+    if (finalCount < 2) { bestStep = maxTimeMs / 4; finalCount = 4; }
+    return { step: bestStep, count: finalCount };
+}
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+async function clearLogBtnClick(){
+    await fetch("/api/clearLogs",{method:"POST"});
+    eventList = [];
+    await fetchStatus();
+}
+
+function setButtonsDisabled(disabled) {
+    const btns = document.querySelectorAll(
+        '.action-bar button.btn-preset, .action-bar button.btn-green, .action-bar button.btn-yellow, .action-bar button.btn-red'
+    );
+    for(const b of btns) b.disabled = disabled;
+}
+
+function getCabinStateBgClass(state) {
+    switch(state) {
+        case "Closed": return "bg-state-closed";
+        case "HalfOpen": return "bg-state-halfopen";
+        case "Open": return "bg-state-open";
+        default: return "";
+    }
+}
+
+function getShowState(rawState){
+    switch(rawState){
+        case "Closed": return "Closed正常（允许访问）";
+        case "HalfOpen": return "HalfOpen试探恢复（小流量测试）";
+        case "Open": return "Open熔断阻断（拒绝访问）";
+        default: return rawState;
+    }
+}
+
+function initLocalConfig(list){
+    localCabinsConfig = [];
+    localFaultConfig = [];
+    for(let i=0;i<list.length;i++){
+        const c = list[i];
+        localCabinsConfig.push({
+            MaxConcurrency: c.config.max_concurrency,
+            FailThreshold: c.config.fail_threshold,
+            WindowSize: c.config.window_size,
+            OpenWaitSec: c.config.open_wait_sec,
+            HalfOpenMaxProbe: c.config.half_open_max_probe,
+            NormalDelayMs: c.config.normal_delay_ms,
+            FaultDelayMs: c.config.fault_delay_ms,
+        });
+        if(c.fault_config){
+            localFaultConfig.push({ Enable: c.fault_config.enable, FaultPercent: c.fault_config.fault_percent });
+        } else {
+            localFaultConfig.push(null);
+        }
+    }
+}
+
+/**
+ * 日志过滤：根据 logFilterMode 过滤日志文本行
+ */
+function renderAllLogs(logs){
+    const panel = document.getElementById("logPanel");
+    panel.innerHTML = "";
+    let filtered = [];
+    // 将 logFilterMode 映射到日志关键词
+    const logFilterKeywords = {
+        "all": null,
+        "normal": ["业务执行成功", "第一轮请求执行完毕", "第二轮", "等待1.2s"],
+        "reject": ["信号量满", "并发限流拒绝"],
+        "open": ["熔断器切换 Open", "熔断打开", "重新切回 Open"],
+        "halfOpen": ["半开试探"],
+        "fallback": ["触发降级兜底"],
+        "error": ["业务执行报错"],
+        "config": ["故障设置", "已更新配置"]
+    };
+    for(let line of logs){
+        if(logFilterMode === "all"){
+            filtered.push(line);
+        } else {
+            const keywords = logFilterKeywords[logFilterMode];
+            if(keywords){
+                for(let kw of keywords){
+                    if(line.includes(kw)){ filtered.push(line); break; }
+                }
+            } else {
+                filtered.push(line);
+            }
+        }
+    }
+    for(let i=0;i<filtered.length;i++){
+        let div = document.createElement("div");
+        div.className="log-line";
+        div.innerText = filtered[i];
+        panel.appendChild(div);
+    }
+    panel.scrollTop = panel.scrollHeight;
+}
+
+
+
+/**
+ * ========== 核心：Canvas 时序事件泳道图 (优化版：智能堆叠) ==========
+ * 集成：重叠堆叠(2行)、聚合气泡、按类型染色、过滤联动、自适应步长、时间格式化
+ * 功能：智能堆叠(2行)、溢出聚合(显示数字)、按类型染色、自适应步长
+ */
+function renderTimelineSvg() {
+    const canvas = document.getElementById("timelineCanvas");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    // 1. 空数据处理
+    if (eventList.length === 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#999";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("暂无事件数据", canvas.width / 2, canvas.height / 2);
+        canvas.onmousemove = null;
+        canvas.onmouseleave = null;
+        return;
+    }
+
+    // ===== 【过滤联动】根据 logFilterMode 过滤事件 =====
+    let displayEvents = eventList;
+    if (logFilterMode !== "all") {
+        displayEvents = eventList.filter(e => e.ev_type === logFilterMode);
+    }
+
+    // ===== 基础布局参数 =====
+    const paddingLeft = 160;
+    const paddingTop = 30;
+    const rowHeight = 42; // 泳道高度
+    const totalWidth = canvas.width;
+    const totalHeight = canvas.height;
+
+    // 收集所有出现过的舱名称做泳道
+    const cabinSet = new Set();
+    displayEvents.forEach(e => cabinSet.add(e.cabin));
+    const cabins = Array.from(cabinSet);
+
+    // 如果没有数据（过滤后），直接清空
+    if (cabins.length === 0) {
+        ctx.clearRect(0, 0, totalWidth, totalHeight);
+        return;
+    }
+
+    const startTime = displayEvents[0].ts;
+    const endTime = displayEvents[displayEvents.length - 1].ts;
+    const timeRange = Math.max(endTime - startTime, 1000);
+    const plotW = totalWidth - paddingLeft;
+
+    ctx.clearRect(0, 0, totalWidth, totalHeight);
+
+    // ===== 自适应步长：绘制垂直网格线 (时间轴) =====
+    // 这里复用了你原有的 calcAdaptiveStep 逻辑
+    const tickInfo = calcAdaptiveStep(timeRange, plotW);
+    const tickStep = tickInfo.step;
+
+    ctx.strokeStyle = "#e2e2e2";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#666";
+    ctx.font = "11px monospace";
+    ctx.textAlign = "center";
+
+    for (let t = 0; t <= timeRange; t += tickStep) {
+        const x = paddingLeft + (t / timeRange) * plotW;
+        ctx.beginPath();
+        ctx.moveTo(x, paddingTop);
+        ctx.lineTo(x, totalHeight - 18);
+        ctx.stroke();
+        ctx.fillText(formatTimeLabel(t), x, totalHeight - 20);
+    }
+    // 补画最后一条线
+    const lastTick = Math.floor(timeRange / tickStep) * tickStep;
+    if (timeRange - lastTick > tickStep * 0.3) {
+        const xEnd = paddingLeft + plotW;
+        ctx.beginPath();
+        ctx.moveTo(xEnd, paddingTop);
+        ctx.lineTo(xEnd, totalHeight - 18);
+        ctx.stroke();
+        ctx.fillText(formatTimeLabel(timeRange), xEnd, totalHeight - 2);
+    }
+
+    // ===== 绘制泳道背景、行分隔线、左侧舱名称 =====
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i < cabins.length; i++) {
+        const y = paddingTop + i * rowHeight;
+        ctx.fillStyle = (i % 2 === 0) ? "#fafafa" : "#f0f1f5";
+        ctx.fillRect(paddingLeft, y, plotW, rowHeight);
+        ctx.strokeStyle = "#e0e0e0";
+        ctx.beginPath();
+        ctx.moveTo(paddingLeft, y + rowHeight);
+        ctx.lineTo(totalWidth, y + rowHeight);
+        ctx.stroke();
+        ctx.fillStyle = "#333";
+        ctx.fillText(cabins[i], paddingLeft - 10, y + rowHeight / 2);
+    }
+
+    // ===== 数据分组：按 舱+时间戳 分组 =====
+    // 注意：这里稍微放宽了时间分组的精度，防止极微小的时间差导致无法堆叠
+    const keyMap = new Map();
+    displayEvents.forEach((e, originalIdx) => {
+        const cabinIdx = cabins.indexOf(e.cabin);
+        if (cabinIdx < 0) return;
+        
+        // 使用 Math.round(e.ts / 10) 将 10ms 内的点视为同一组，避免过于密集的散点
+        // 如果你的数据时间戳非常精确，可以改回 e.ts
+        const timeKey = Math.round(e.ts / 50); 
+        
+        const key = cabinIdx + "_" + timeKey;
+        if (!keyMap.has(key)) keyMap.set(key, []);
+        keyMap.get(key).push({ ...e, originalIdx, cabinIdx });
+    });
+
+    // ===== 核心绘制：事件圆点 / 聚合气泡 =====
+    const hitAreas = []; // 用于存储鼠标悬停检测区域
+
+    // 配置参数
+    const MAX_STACK = 6;      // 超过6个点显示聚合气泡
+    const RADIUS = 5;         // 小球半径
+    const STEP_X = 14;        // 小球水平间距 (中心到中心)
+    const VERTICAL_GAP = 16;  // 上下排垂直间距
+
+    keyMap.forEach((events, key) => {
+        const groupTotal = events.length;
+        const cabinIdx = events[0].cabinIdx;
+        const ts = events[0].ts; // 使用组内第一个点的时间作为基准
+
+        // 计算中心坐标
+        const centerX = paddingLeft + ((ts - startTime) / timeRange) * plotW;
+        const centerY = paddingTop + cabinIdx * rowHeight + rowHeight / 2;
+
+        if (groupTotal > MAX_STACK) {
+            // ========== 模式 A：聚合气泡 (数量过多) ==========
+            const typeCounts = {};
+            events.forEach(e => { typeCounts[e.ev_type] = (typeCounts[e.ev_type] || 0) + 1; });
+            
+            // 找出数量最多的类型作为气泡颜色
+            let maxType = events[0].ev_type;
+            let maxCount = 0;
+            for (let t in typeCounts) {
+                if (typeCounts[t] > maxCount) { maxCount = typeCounts[t]; maxType = t; }
+            }
+            const bubbleColor = colorMap[maxType] || "#999";
+            const bubbleRadius = RADIUS * 2.5;
+
+            // 绘制背景光晕
+            ctx.globalAlpha = 0.3;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, bubbleRadius + 4, 0, Math.PI * 2);
+            ctx.fillStyle = bubbleColor;
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+
+            // 绘制实心气泡
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, bubbleRadius, 0, Math.PI * 2);
+            ctx.fillStyle = bubbleColor;
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // 绘制文字
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 10px Arial";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("+" + groupTotal, centerX, centerY + 1);
+
+            // 记录 Tooltip 信息
+            let tooltipText = "聚合事件 (" + groupTotal + "个)\n时间: " + formatTimeLabel(ts - startTime);
+            tooltipText += "\n───────";
+            for (let t in typeCounts) {
+                tooltipText += "\n" + (typeLabelMap[t] || t) + ": " + typeCounts[t] + "个";
+            }
+            hitAreas.push({ x: centerX, y: centerY, r: bubbleRadius, tip: tooltipText });
+
+        } else {
+            // ========== 模式 B：智能堆叠 (2行矩阵) ==========
+            // 逻辑：
+            // 1-3个：单排居中
+            // 4-6个：双排 (上3下3, 上3下2, 上2下2)
+            
+            // 计算第一排数量 (最多3个)
+            let topCount = Math.ceil(groupTotal / 2);
+            if (topCount > 3) topCount = 3;
+            
+            // 计算第二排数量
+            let bottomCount = groupTotal - topCount;
+            if (bottomCount > 3) bottomCount = 3; // 理论上不会超过，因为总数<=6
+
+            // 计算最大宽度，用于整体居中
+            const maxCols = Math.max(topCount, bottomCount);
+            const totalWidthOccupied = (maxCols - 1) * STEP_X;
+            const startX = centerX - (totalWidthOccupied / 2);
+
+            // 绘制第一排
+            for (let i = 0; i < topCount; i++) {
+                const ev = events[i];
+                const x = startX + i * STEP_X;
+                const y = centerY - (VERTICAL_GAP / 2); // 上排向上偏移
+                
+                drawEventDot(ctx, x, y, RADIUS, colorMap[ev.ev_type] || "#999");
+                hitAreas.push({ x: x, y: y, r: RADIUS, tip: (typeLabelMap[ev.ev_type] || ev.ev_type) + "\n" + ev.msg });
+            }
+
+            // 绘制第二排
+            for (let i = 0; i < bottomCount; i++) {
+                const ev = events[topCount + i];
+                const x = startX + i * STEP_X;
+                const y = centerY + (VERTICAL_GAP / 2); // 下排向下偏移
+
+                drawEventDot(ctx, x, y, RADIUS, colorMap[ev.ev_type] || "#999");
+                hitAreas.push({ x: x, y: y, r: RADIUS, tip: (typeLabelMap[ev.ev_type] || ev.ev_type) + "\n" + ev.msg });
+            }
+        }
+    });
+
+    // ===== 辅助函数：绘制单个圆点 (带白色描边) =====
+    function drawEventDot(context, x, y, r, color) {
+        context.beginPath();
+        context.arc(x, y, r, 0, Math.PI * 2);
+        context.fillStyle = color;
+        context.fill();
+        context.strokeStyle = "#fff"; // 白色描边，增加清晰度
+        context.lineWidth = 1;
+        context.stroke();
+    }
+
+    // ===== 鼠标悬停 Tooltip 交互 =====
+    canvas.onmousemove = function (evt) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = (evt.clientX - rect.left) * (canvas.width / rect.width);
+        const my = (evt.clientY - rect.top) * (canvas.height / rect.height);
+        
+        let found = null;
+        // 倒序遍历，确保上层的点优先被检测到
+        for (let i = hitAreas.length - 1; i >= 0; i--) {
+            const h = hitAreas[i];
+            const dist = Math.sqrt((mx - h.x) * (mx - h.x) + (my - h.y) * (my - h.y));
+            if (dist < h.r + 2) { // +2 增加一点检测容差
+                found = h;
+                break;
+            }
+        }
+        canvas.title = found ? found.tip : "";
+    };
+    canvas.onmouseleave = function () {
+        canvas.title = "";
+    };
+}
+
+
+
+function rebuildCabinsDOM(list){
+    let html="";
+    for(let idx=0;idx<list.length;idx++){
+        const c = list[idx];
+        let cls="state-"+c.state;
+        let showText = getShowState(c.state);
+        html += '<div class="cabin cabin-card" data-cabin-name="' + c.name + '">';
+        html += '<h3>' + c.name + ' <span class="' + cls + '">' + showText + '</span></h3>';
+        html += '<div class="metric-grid">';
+        html += '<div class="metric-item" data-key="total">总任务: ' + c.metrics.total_task + '</div>';
+        html += '<div class="metric-item" data-key="success">成功: ' + c.metrics.success + '</div>';
+        html += '<div class="metric-item" data-key="limitReject">限流拒绝: ' + c.metrics.limit_reject + '</div>';
+        html += '<div class="metric-item" data-key="cbReject">熔断拒绝: ' + c.metrics.cb_reject + '</div>';
+        html += '<div class="metric-item" data-key="bizErr">业务报错: ' + c.metrics.business_error + '</div>';
+        html += '<div class="metric-item" data-key="degrade">降级次数: ' + c.metrics.degrade_count + '</div>';
+        html += '<div class="metric-item" data-key="cbstat">窗口统计：成功:-- 失败:-- 当前失败占比:--</div>';
+        html += '</div>';
+        html += '<div class="cfg-row">';
+        html += '<label for="maxc_'+idx+'">最大并发:</label><input type="number" id="maxc_'+idx+'" value="'+c.config.max_concurrency+'">';
+        html += '<label for="failp_'+idx+'">失败触发熔断%:</label><input type="number" id="failp_'+idx+'" value="'+c.config.fail_threshold+'">';
+        html += '<label for="win_'+idx+'">统计样本请求数:</label><input type="number" id="win_'+idx+'" value="'+c.config.window_size+'">';
+        html += '<label for="wait_'+idx+'">熔断冷却时间(s):</label><input type="number" id="wait_'+idx+'" value="'+c.config.open_wait_sec+'">';
+        html += '<label for="halfprobe_'+idx+'">半开试探最大请求数:</label><input type="number" id="halfprobe_'+idx+'" value="'+c.config.half_open_max_probe+'">';
+        html += '<label for="normdelay_'+idx+'">正常耗时(ms):</label><input type="number" id="normdelay_'+idx+'" value="'+c.config.normal_delay_ms+'">';
+        html += '<label for="faultdelay_'+idx+'">故障耗时(ms):</label><input type="number" id="faultdelay_'+idx+'" value="'+c.config.fault_delay_ms+'">';
+        html += '<button class="btn-blue" onclick="applyCfg('+idx+')">应用配置</button>';
+        html += '</div>';
+        if(c.fault_config){
+            const f = c.fault_config;
+            html += '<div class="fault-row">';
+            html += '<label><input type="checkbox" id="fault-enable-'+idx+'" '+(f.enable?"checked":"")+'>模拟业务故障</label>';
+            html += '<label for="fault-pct-'+idx+'">故障%:</label><input type="number" min="0" max="100" id="fault-pct-'+idx+'" value="'+f.fault_percent+'"> ';
+            html += '<button class="btn-red" onclick="onFaultChange('+idx+')">设置故障</button>';
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+    document.getElementById("container").innerHTML=html;
+}
+
+async function onFaultChange(idx){
+    const c = lastCabinList[idx];
+    const enableDom = document.getElementById("fault-enable-"+idx);
+    const pctDom = document.getElementById("fault-pct-"+idx);
+    const payload = {
+        cabin_name: c.name,
+        enable: enableDom.checked,
+        fault_percent: parseInt(pctDom.value||"0")
+    };
+    await fetch("/api/setFault",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
+    });
+    fetchStatus();
+}
+
+async function fetchStatus(){
+    try{
+        const res = await fetch("/api/status");
+        const payload = await res.json();
+        lastCabinList = payload.cabins;
+        const list = payload.cabins;
+        initLocalConfig(list);
+
+        if(Array.isArray(payload.events)){
+            eventList = payload.events;
+        }
+
+        const domCabins = document.querySelectorAll(".cabin");
+        if(domCabins.length !== list.length){
+            rebuildCabinsDOM(list);
+        }
+        for(let idx=0; idx < list.length; idx++){
+            const c = list[idx];
+            const cabinDom = document.querySelector('.cabin:nth-child('+(idx+1)+')');
+            if(!cabinDom) continue;
+
+            const winSucc = c.cb_window_success;
+            const winFail = c.cb_window_fail;
+            const winTotal = winSucc + winFail;
+            let failRateStr = "--";
+            if(winTotal > 0){
+                const rate = Math.round(winFail * 100 / winTotal);
+                failRateStr = rate + "%";
+            }
+
+            cabinDom.classList.remove("bg-state-closed","bg-state-halfopen","bg-state-open");
+            const bgCls = getCabinStateBgClass(c.state);
+            if(bgCls) cabinDom.classList.add(bgCls);
+
+            let cls="state-"+c.state;
+            let showText = getShowState(c.state);
+            cabinDom.querySelector("h3 span").className = cls;
+            cabinDom.querySelector("h3 span").innerText = showText;
+            cabinDom.querySelector('[data-key="total"]').innerText = "总任务: "+c.metrics.total_task;
+            cabinDom.querySelector('[data-key="success"]').innerText = "成功: "+c.metrics.success;
+            cabinDom.querySelector('[data-key="limitReject"]').innerText = "限流拒绝: "+c.metrics.limit_reject;
+            cabinDom.querySelector('[data-key="cbReject"]').innerText = "熔断拒绝: "+c.metrics.cb_reject;
+            cabinDom.querySelector('[data-key="bizErr"]').innerText = "业务报错: "+c.metrics.business_error;
+            cabinDom.querySelector('[data-key="degrade"]').innerText = "降级次数: "+c.metrics.degrade_count;
+            cabinDom.querySelector('[data-key="cbstat"]').innerText = "窗口统计：成功:"+winSucc+" 失败:"+winFail+" 当前失败占比:"+failRateStr;
+
+            const maxcInput = document.getElementById("maxc_"+idx);
+            const failpInput = document.getElementById("failp_"+idx);
+            const winInput = document.getElementById("win_"+idx);
+            const waitInput = document.getElementById("wait_"+idx);
+            const halfProbeInput = document.getElementById("halfprobe_"+idx);
+            const normDelayInput = document.getElementById("normdelay_"+idx);
+            const faultDelayInput = document.getElementById("faultdelay_"+idx);
+            const localCfg = localCabinsConfig[idx];
+            if(document.activeElement !== maxcInput) maxcInput.value = localCfg.MaxConcurrency;
+            if(document.activeElement !== failpInput) failpInput.value = localCfg.FailThreshold;
+            if(document.activeElement !== winInput) winInput.value = localCfg.WindowSize;
+            if(document.activeElement !== waitInput) waitInput.value = localCfg.OpenWaitSec;
+            if(document.activeElement !== halfProbeInput) halfProbeInput.value = localCfg.HalfOpenMaxProbe;
+            if(document.activeElement !== normDelayInput) normDelayInput.value = localCfg.NormalDelayMs;
+            if(document.activeElement !== faultDelayInput) faultDelayInput.value = localCfg.FaultDelayMs;
+
+            const localFault = localFaultConfig[idx];
+            if(localFault){
+                const chkEnable = document.getElementById("fault-enable-"+idx);
+                const inputPct = document.getElementById("fault-pct-"+idx);
+                if(document.activeElement !== chkEnable) chkEnable.checked = localFault.Enable;
+                if(document.activeElement !== inputPct) inputPct.value = localFault.FaultPercent;
+            }
+        }
+        renderAllLogs(payload.logs);
+        renderTimelineSvg();
+        const fb = payload.first_batch;
+        const sb = payload.second_batch;
+        document.getElementById("batchTip").innerText = "【第一轮批量请求】下单核心舱:" + fb.order + "个，营销舱:" + fb.marketing + "个，报表辅助舱:" + fb.report + "个 \n【第二轮试探请求】报表辅助舱:" + sb.report + "个";
+    }catch(e){
+        console.error("fetchStatus error",e);
+    }
+}
+
+async function applyCfg(idx){
+    const payload = {
+        index: idx,
+        cfg:{
+            max_concurrency: parseInt(document.getElementById("maxc_"+idx).value),
+            fail_threshold: parseInt(document.getElementById("failp_"+idx).value),
+            window_size: parseInt(document.getElementById("win_"+idx).value),
+            open_wait_sec: parseInt(document.getElementById("wait_"+idx).value),
+            half_open_max_probe: parseInt(document.getElementById("halfprobe_"+idx).value),
+            normal_delay_ms: parseInt(document.getElementById("normdelay_"+idx).value),
+            fault_delay_ms: parseInt(document.getElementById("faultdelay_"+idx).value),
+        }
+    };
+    await fetch("/api/applyConfig",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
+    });
+    await fetchStatus();
+}
+
+async function sceneA(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/reset");
+        await fetch("/api/applyConfig",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({index:0,cfg:{max_concurrency:2,fail_threshold:50,window_size:40,open_wait_sec:1,half_open_max_probe:2,normal_delay_ms:0,fault_delay_ms:0}})});
+        await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"营销舱",enable:false,fault_percent:0})});
+        await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"报表辅助舱",enable:false,fault_percent:0})});
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+async function sceneB(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/reset");
+        await fetch("/api/applyConfig",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({index:1,cfg:{max_concurrency:40,fail_threshold:50,window_size:40,open_wait_sec:30,half_open_max_probe:2,normal_delay_ms:0,fault_delay_ms:0}})});
+        await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"营销舱",enable:true,fault_percent:100})});
+        await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"报表辅助舱",enable:false,fault_percent:0})});
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+async function sceneC(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/reset");
+        await fetch("/api/applyConfig",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({index:2,cfg:{max_concurrency:5,fail_threshold:30,window_size:20,open_wait_sec:2,half_open_max_probe:2,normal_delay_ms:0,fault_delay_ms:0}})});
+        await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"报表辅助舱",enable:true,fault_percent:100})});
+        await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({cabin_name:"营销舱",enable:false,fault_percent:0})});
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+async function runFirst(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/runFirst");
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+async function waitHalf(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/waitHalfOpen");
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+async function runSecond(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/runSecond");
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+async function resetAll(){
+    await fetch("/api/reset");
+    eventList = [];
+    await fetchStatus();
+}
+
+async function resetMetricsOnly(){
+    if(isRunning) return;
+    isRunning = true; setButtonsDisabled(true);
+    try{
+        await fetch("/api/resetMetricsOnly",{method:"POST"});
+        await fetchStatus();
+    }finally{ isRunning = false; setButtonsDisabled(false); }
+}
+
+window.onload = async function(){
+    await fetchStatus();
+    setInterval(fetchStatus, 800);
+    document.getElementById("logFilterSel").onchange = function(){
+        logFilterMode = this.value;
+        fetchStatus();
+    }
+};
+</script>
+</body>
+</html>

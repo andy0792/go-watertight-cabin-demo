@@ -19,9 +19,46 @@ func resetFaultConfig() {
 	faultConfig["报表辅助舱"] = &CabinFaultConfig{Enable: false, FaultPercent: 0}
 }
 
+// resetTimelineEvents 重置时序事件，测试隔离
+func resetTimelineEvents() {
+	timelineMu.Lock()
+	defer timelineMu.Unlock()
+	globalTimelineEvents = []TimelineEvent{}
+}
+
+func TestLogTimelineEvent(t *testing.T) {
+	resetTimelineEvents()
+	// 写入一条事件
+	logTimelineEvent("测试舱", "normal", "测试消息1")
+
+	timelineMu.Lock()
+	l := len(globalTimelineEvents)
+	evt := globalTimelineEvents[0]
+	timelineMu.Unlock()
+
+	if l != 1 {
+		t.Fatalf("期望事件数量1，实际 %d", l)
+	}
+	if evt.Cabin != "测试舱" || evt.EvType != "normal" || evt.Message != "测试消息1" {
+		t.Error("logTimelineEvent 字段写入不正确")
+	}
+
+	// 测试超过200条自动截断
+	resetTimelineEvents()
+	for i := 0; i < 220; i++ {
+		logTimelineEvent("A", "normal", "msg")
+	}
+	timelineMu.Lock()
+	afterLen := len(globalTimelineEvents)
+	timelineMu.Unlock()
+	if afterLen != 200 {
+		t.Errorf("超过200应截断为200，实际=%d", afterLen)
+	}
+}
+
 // 简单：Reset重置
 func TestBusinessCabin_Reset(t *testing.T) {
-	cabin := NewCabin("reset‑test", 5, NewCircuitBreaker(50, 10, 1*time.Second))
+	cabin := NewCabin("reset‑test", 5, NewCircuitBreaker(50, 10, 200*time.Millisecond, 3), 0, 0)
 	_ = cabin.Run(context.Background(), func(ctx context.Context) error { return errors.New("err") })
 	_ = cabin.Run(context.Background(), func(ctx context.Context) error { return nil })
 	cabin.Reset()
@@ -35,7 +72,7 @@ func TestBusinessCabin_Reset(t *testing.T) {
 
 // 熔断器 Closed -> Open
 func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
-	cb := NewCircuitBreaker(50, 10, 200*time.Millisecond)
+	cb := NewCircuitBreaker(50, 10, 200*time.Millisecond, 3)
 	for i := 0; i < 3; i++ {
 		cb.OnResult(true)
 	}
@@ -46,26 +83,39 @@ func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
 }
 
 // 熔断器 Open 冷却后切换 HalfOpen
+// 熔断器 Open 冷却后切换 HalfOpen
 func TestCircuitBreaker_OpenToHalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(50, 10, 100*time.Millisecond)
+	cb := NewCircuitBreaker(50, 10, 100*time.Millisecond, 3)
 	cb.state.Store(int32(StateOpen))
 	cb.lastOpenTime.Store(time.Now().UnixMilli())
+
+	// 冷却期内调用Allow，应当返回false
 	if cb.Allow() {
 		t.Error("冷却期内Open状态应该不允许访问")
 	}
+
+	// 等待超过冷却时间
 	time.Sleep(110 * time.Millisecond)
-	ok := cb.Allow()
-	if !ok {
-		t.Error("冷却时间过后应该切换HalfOpen并允许访问")
+
+	// ✅第一次调用Allow：内部把Open→HalfOpen，但是返回false
+	first := cb.Allow()
+	if first != false {
+		t.Error("时间到后的第一次Allow调用，应当返回false（本次拒绝，仅切换状态）")
 	}
 	if cb.GetState() != StateHalfOpen {
-		t.Errorf("expect HalfOpen got %s", cb.GetState())
+		t.Error("第一次Allow调用后，状态必须切换为HalfOpen")
+	}
+
+	// ✅第二次调用Allow，才返回true，允许试探
+	second := cb.Allow()
+	if !second {
+		t.Error("进入HalfOpen之后，第二次Allow应当返回true，允许试探请求")
 	}
 }
 
 // HalfOpen状态测试
 func TestCircuitBreaker_HalfOpen(t *testing.T) {
-	cb := NewCircuitBreaker(50, 10, 100*time.Millisecond)
+	cb := NewCircuitBreaker(50, 10, 100*time.Millisecond, 3)
 	cb.state.Store(int32(StateHalfOpen))
 	cb.OnResult(true)
 	if cb.GetState() != StateOpen {
@@ -167,7 +217,7 @@ func TestBizFuncs(t *testing.T) {
 // 测试：熔断器打开时，CbReject熔断拒绝计数
 func TestBusinessCabin_CbReject(t *testing.T) {
 	// 窗口10，失败阈值50%，冷却1秒
-	cabin := NewCabin("cb‑reject‑test", 10, NewCircuitBreaker(50, 10, 1*time.Second))
+	cabin := NewCabin("cb‑reject‑test", 10, NewCircuitBreaker(50, 10, 1*time.Second, 3), 0, 0)
 	// 手动置为Open，必须同时设置lastOpenTime！
 	nowMs := time.Now().UnixMilli()
 	cabin.cb.state.Store(int32(StateOpen))
@@ -190,7 +240,7 @@ func TestBusinessCabin_CbReject(t *testing.T) {
 // 技巧：maxConcurrency=0，TryAcquire(1)直接返回false，不需要goroutine占坑！
 func TestBusinessCabin_LimitReject(t *testing.T) {
 	// maxConcurrency设置为0，信号量直接拿不到
-	cabin := NewCabin("limit‑reject‑test", 0, NewCircuitBreaker(50, 10, 1*time.Second))
+	cabin := NewCabin("limit‑reject‑test", 0, NewCircuitBreaker(50, 10, 1*time.Second, 3), 0, 0)
 	err := cabin.Run(context.Background(), func(ctx context.Context) error {
 		return nil
 	})
@@ -214,8 +264,8 @@ func testMarketingFallback(ctx context.Context) error {
 // TestMarketingCabinFallbackOpen 单元测试：熔断器Open状态，请求命中降级
 func TestMarketingCabinFallbackOpen(t *testing.T) {
 	// 1. 新建营销舱，绑定fallback（模拟main初始化）
-	cb := NewCircuitBreaker(50, 40, 1*time.Second)
-	marketingCabin := NewCabin("营销舱", 20, cb)
+	cb := NewCircuitBreaker(50, 40, 1*time.Second, 3)
+	marketingCabin := NewCabin("营销舱", 20, cb, 0, 0)
 	marketingCabin.fallback = testMarketingFallback // 关键：挂载降级函数
 	// 2. 强制把熔断器置为 Open
 	marketingCabin.cb.state.Store(int32(StateOpen))
@@ -242,8 +292,8 @@ func TestMarketingCabinFallbackOpen(t *testing.T) {
 
 // TestMarketingCabinClosed 对照测试：熔断器Closed正常执行业务，不走降级
 func TestMarketingCabinClosed(t *testing.T) {
-	cb := NewCircuitBreaker(50, 40, 1*time.Second)
-	marketingCabin := NewCabin("营销舱", 20, cb)
+	cb := NewCircuitBreaker(50, 40, 1*time.Second, 3)
+	marketingCabin := NewCabin("营销舱", 20, cb, 0, 0)
 	marketingCabin.fallback = testMarketingFallback
 	bizCalled := false
 	err := marketingCabin.Run(context.Background(), func(ctx context.Context) error {
@@ -267,12 +317,12 @@ func TestMarketingCabinClosed(t *testing.T) {
 
 // TestCabinReCreateLoseFallback 重点复现Web【应用配置】的bug：重建Cabin忘记赋值fallback
 func TestCabinReCreateLoseFallback(t *testing.T) {
-	cb := NewCircuitBreaker(20, 10, 1*time.Second)
-	oldCabin := NewCabin("营销舱", 20, cb)
+	cb := NewCircuitBreaker(20, 10, 1*time.Second, 3)
+	oldCabin := NewCabin("营销舱", 20, cb, 0, 0)
 	oldCabin.fallback = testMarketingFallback
 	// 模拟apiApplyConfig重建舱（BUG版本：忘记赋值 newCabin.fallback）
-	newCb := NewCircuitBreaker(20, 10, 1*time.Second)
-	newCabin := NewCabin("营销舱", 100, newCb)
+	newCb := NewCircuitBreaker(20, 10, 1*time.Second, 3)
+	newCabin := NewCabin("营销舱", 100, newCb, 0, 0)
 	// newCabin.fallback = testMarketingFallback  // 故意注释掉，模拟网页bug
 	nowMs := time.Now().UnixMilli()
 	newCabin.cb.state.Store(int32(StateOpen))
@@ -289,14 +339,18 @@ func TestCabinReCreateLoseFallback(t *testing.T) {
 }
 
 // =========接口测试==========
-
-// TestApiStatus 接口测试：单独测试 /api/status
+// TestApiStatus 接口测试：单独测试 /api/status，校验新增events字段
 func TestApiStatus(t *testing.T) {
 	resetFaultConfig()
+	resetTimelineEvents()
 	// 重置全局舱，清除历史状态
 	cabinOrder.Reset()
 	cabinMarketing.Reset()
 	cabinReport.Reset()
+
+	// 写入一条测试时序事件
+	logTimelineEvent("测试舱", "normal", "接口测试事件")
+
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	rec := httptest.NewRecorder()
 	apiStatus(rec, req)
@@ -304,8 +358,10 @@ func TestApiStatus(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want status 200, got %d", resp.StatusCode)
 	}
+
 	var payload struct {
-		Cabins []CabinView `json:"cabins"`
+		Cabins []CabinView     `json:"cabins"`
+		Events []TimelineEvent `json:"events"`
 	}
 	err := json.NewDecoder(resp.Body).Decode(&payload)
 	if err != nil {
@@ -313,6 +369,9 @@ func TestApiStatus(t *testing.T) {
 	}
 	if len(payload.Cabins) != 3 {
 		t.Fatalf("expect 3 cabins, got %d", len(payload.Cabins))
+	}
+	if len(payload.Events) != 1 {
+		t.Errorf("apiStatus应返回events数组，期望1条，实际=%d", len(payload.Events))
 	}
 	// 校验FaultConfig字段存在
 	for _, v := range payload.Cabins {
@@ -373,8 +432,12 @@ func TestApiSetFault(t *testing.T) {
 	resetFaultConfig()
 }
 
-// TestApiReset 接口测试：测试 /api/reset 重置接口
+// TestApiReset 接口测试：测试 /api/reset 重置接口，校验时序事件被清空
 func TestApiReset(t *testing.T) {
+	resetTimelineEvents()
+	// 先写入事件
+	logTimelineEvent("A", "normal", "重置前事件")
+
 	req := httptest.NewRequest(http.MethodPost, "/api/reset", nil)
 	rec := httptest.NewRecorder()
 	apiReset(rec, req)
@@ -382,6 +445,14 @@ func TestApiReset(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reset api expect 200, got %d", resp.StatusCode)
 	}
+	// 校验时序事件数组已清空
+	timelineMu.Lock()
+	evLen := len(globalTimelineEvents)
+	timelineMu.Unlock()
+	if evLen != 0 {
+		t.Errorf("apiReset应当清空globalTimelineEvents，实际长度=%d", evLen)
+	}
+
 	// reset接口调用后，校验熔断器回到Closed
 	if cabinOrder.cb.GetState() != StateClosed {
 		t.Error("after apiReset, cabinOrder should be Closed")
@@ -389,15 +460,16 @@ func TestApiReset(t *testing.T) {
 }
 
 // TestApiClearLogs 测试新增接口 /api/clearLogs 仅清空日志，不改动舱状态指标
+// 同时校验时序事件数组被清空
 func TestApiClearLogs(t *testing.T) {
-	//先写一点日志
+	resetTimelineEvents()
+	//先写一点日志与时序事件
 	onEventLog("测试日志1")
-	onEventLog("测试日志2")
+	logTimelineEvent("测试舱", "normal", "clearLogs测试事件")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/clearLogs", nil)
 	rec := httptest.NewRecorder()
 	apiClearLogs(rec, req)
-
 	resp := rec.Result()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("apiClearLogs expect 200 got %d", resp.StatusCode)
@@ -411,6 +483,14 @@ func TestApiClearLogs(t *testing.T) {
 		t.Errorf("globalLogs 清空后预期剩余1条提示日志，当前长度=%d", l)
 	}
 
+	//校验时序事件数组清空
+	timelineMu.Lock()
+	evLen := len(globalTimelineEvents)
+	timelineMu.Unlock()
+	if evLen != 0 {
+		t.Errorf("apiClearLogs应当清空globalTimelineEvents，实际长度=%d", evLen)
+	}
+
 	//校验舱状态不受影响：熔断器状态、metrics完全不变
 	if cabinOrder.cb.GetState() != StateClosed {
 		t.Error("执行clearLogs不应该改变熔断器状态")
@@ -421,6 +501,7 @@ func TestApiClearLogs(t *testing.T) {
 // reset → runFirst触发熔断 → waitHalfOpen冷却 → runSecond半开试探 → status校验结果
 func TestFullFlow_Integration(t *testing.T) {
 	resetFaultConfig()
+	resetTimelineEvents()
 	// 1.重置全部舱
 	reqReset := httptest.NewRequest(http.MethodPost, "/api/reset", nil)
 	recReset := httptest.NewRecorder()
@@ -449,12 +530,14 @@ func TestFullFlow_Integration(t *testing.T) {
 	if recRun2.Result().StatusCode != http.StatusOK {
 		t.Fatal("api runSecond failed")
 	}
-	// 5.拉取状态接口，校验最终数据
+	// 5.拉取状态接口，校验返回events不为空（产生了时序事件）
 	reqStatus := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	recStatus := httptest.NewRecorder()
 	apiStatus(recStatus, reqStatus)
+
 	var payload struct {
-		Cabins []CabinView `json:"cabins"`
+		Cabins []CabinView     `json:"cabins"`
+		Events []TimelineEvent `json:"events"`
 	}
 	err := json.NewDecoder(recStatus.Result().Body).Decode(&payload)
 	if err != nil {
@@ -464,13 +547,17 @@ func TestFullFlow_Integration(t *testing.T) {
 	if len(payload.Cabins) != 3 {
 		t.Fatalf("expect 3 cabins, got %d", len(payload.Cabins))
 	}
+	if len(payload.Events) == 0 {
+		t.Error("集成测试：/api/status events数组不应该为空，业务执行需要产生时序事件")
+	}
+
 	var marketingCabinView CabinView
 	for _, v := range payload.Cabins {
 		if v.Name == "营销舱" {
 			marketingCabinView = v
 		}
 	}
-	t.Logf("集成测试结束，营销舱状态=%s，降级次数=%d",
-		marketingCabinView.State, marketingCabinView.Metrics.DegradeCount)
+	t.Logf("集成测试结束，营销舱状态=%s，降级次数=%d，时序事件数量=%d",
+		marketingCabinView.State, marketingCabinView.Metrics.DegradeCount, len(payload.Events))
 	resetFaultConfig()
 }
