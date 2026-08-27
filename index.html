@@ -44,11 +44,92 @@ button:hover{opacity:0.88;}
 .cabin.bg-state-halfopen { background-color: #fff9c4; }
 .cabin.bg-state-open { background-color: #ffebee; }
 button:disabled { opacity:0.45 !important; cursor: not-allowed; }
+/* ===== 说明区折叠 ===== */
+.help-details{margin-bottom:14px;}
+.help-details summary{cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#6b7785;background:#fff;border:1px solid #e5e6eb;border-radius:8px;padding:6px 12px;list-style:none;}
+.help-details summary::-webkit-details-marker{display:none;}
+.help-details summary::after{content:"▾";font-size:11px;transition:transform .2s;}
+.help-details[open] summary::after{transform:rotate(180deg);}
+.help-details[open] summary{margin-bottom:8px;}
+.help-details .desc-text{background:#fff;border:1px solid #e5e6eb;border-radius:8px;padding:12px 14px;}
+/* ===== 控制区吸顶 ===== */
+.ctrl-sticky{position:sticky;top:0;z-index:20;background:#f7f8fa;padding:4px 0 10px;}
+/* ===== 三舱状态总览条 ===== */
+.cabin-overview{display:flex;gap:10px;margin-bottom:14px;}
+.overview-item{flex:1;display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #e5e6eb;border-radius:10px;padding:10px 14px;cursor:pointer;transition:border-color .2s,box-shadow .2s;user-select:none;}
+.overview-item:hover{border-color:#4080ff;}
+.overview-item.is-open{border-color:#4080ff;box-shadow:0 0 0 1px rgba(64,128,255,0.25);}
+.overview-item.is-abnormal{border-color:#d93025;box-shadow:0 0 0 1px rgba(217,48,37,0.25);}
+.overview-item.is-abnormal.is-halfopen{border-color:#ff7d00;box-shadow:0 0 0 1px rgba(255,125,0,0.25);}
+.overview-item .ov-name{font-size:14px;font-weight:600;color:#1f2329;}
+.overview-item .ov-state{flex-shrink:0;}
+.overview-item .ov-failrate{font-size:12px;color:#86909c;margin-left:auto;white-space:nowrap;}
+/* ===== 舱卡片：头部 + 可折叠主体 + 异常高亮 ===== */
+.cabin-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.cabin-head h3{margin-bottom:0;}
+.cabin-toggle{flex-shrink:0;}
+.cabin-head .head-controls{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.head-controls .wtype-label{font-size:12px;color:#4e5969;flex-shrink:0;}
+.head-controls select{width:96px;padding:4px 6px;border:1px solid #dcdfe6;border-radius:5px;font-size:13px;background:#fff;color:#1f2329;cursor:pointer;}
+.head-controls select:focus{outline:none;border-color:#4080ff;}
+.cabin-body.collapsed{display:none;}
+.cabin.cabin-abnormal{border-color:#d93025;box-shadow:0 1px 6px rgba(217,48,37,0.2);}
+.cabin.cabin-abnormal.cabin-halfopen{border-color:#ff7d00;box-shadow:0 1px 6px rgba(255,125,0,0.2);}
+/* ===== 首页 Slogan 区 ===== */
+.hero-slogan{margin:14px 0 16px;padding:14px 18px;background:#fff;border-left:3px solid #4080ff;border-radius:0 8px 8px 0;box-shadow:0 1px 3px rgba(0,0,0,0.06);}
+.hero-slogan p{margin:0;}
+.slogan-line-1{font-size:17px;font-weight:600;color:#1f2329;line-height:1.6;}
+.slogan-line-2{font-size:14px;font-weight:normal;color:#6b7280;line-height:1.6;margin-top:2px;}
+/* ===== P0-1 参数校验 + P0-2 熔断倒计时 ===== */
+#toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%);background:#1f2329;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;line-height:1.5;z-index:100;opacity:0;pointer-events:none;transition:opacity .2s;max-width:80%;text-align:center;}
+#toast.show{opacity:1;}
+#toast.err{background:#d93025;}
+.cfg-row input.invalid,.fault-row input.invalid{border-color:#f53f3f !important;box-shadow:0 0 0 2px rgba(245,63,63,0.15);}
+.ov-countdown{font-size:12px;font-weight:600;color:#ff7d00;white-space:nowrap;}
+.cb-countdown{font-size:12px;font-weight:600;color:#ff7d00;white-space:nowrap;}
+/* ===== 💡重置提示弹窗【新增CSS】===== */
+.info-tip{
+    font-size:18px;
+    cursor:pointer;
+    user-select:none;
+    position:relative;
+    line-height:1;
+}
+.info-pop{
+    position:absolute;
+    right:0;
+    top:30px;
+    z-index:100;
+    width:420px;
+    background:#ffffff;
+    border:1px solid #d2d6dc;
+    box-shadow:0 4px 12px rgba(0,0,0,0.12);
+    border-radius:8px;
+    padding:12px 14px;
+    display:none;
+    font-size:14px;
+    color:#2c3038;
+}
+.group-note {
+    /* 默认不可见，占位留白 */
+    visibility: hidden;
+    height: auto;
+    margin:8px 0;
+}
+.group-note.show{
+    visibility: visible;
+}
 </style>
 </head>
 <body>
 <div class="page-header">
-<h1>软件水密隔舱演示（限流 + 熔断 + 降级 + 故障注入）</h1>
+<h1>软件水密隔舱演示（限流 · 熔断 · 降级 · 故障注入）</h1>
+<div class="hero-slogan">
+    <p class="slogan-line-1">一个舱进水，整艘船不沉。</p>
+    <p class="slogan-line-2">演示单个故障如何不拖垮整个应用。</p>
+</div>
+<details class="help-details">
+<summary>使用说明</summary>
 <div class="desc-text">
 💡说明：各业务独立隔离舱，信号量控制最大并发；失败占比超标触发熔断器。<br/>
 💡提示：需要足够请求量把熔断器打入Open状态，才会触发降级/熔断拒绝。<br/>
@@ -56,10 +137,13 @@ button:disabled { opacity:0.45 !important; cursor: not-allowed; }
 ▶场景A‑限流挡流量：【下单核心舱】演示限流。<br/>
 ▶场景B‑降级保自己：【营销舱】演示熔断+降级，降级保自己。<br/>
 ▶场景C‑熔断防雪崩：【报表辅助舱】演示熔断，熔断断下游，防下游雪崩。<br/>
+🔀统计窗口可切换：简单计数窗口（攒满window_size个样本结算后清零）vs 滑动统计窗口（只看最近N秒，窗口外旧样本自动失效），对比两种失败率统计口径。<br/>
 📌操作顺序：点击场景按钮完成配置 → 点击「发起第一轮批量请求」产生流量，观察面板指标。<br/>
 </div>
+</details>
 </div>
 
+<div class="ctrl-sticky">
 <div class="action-bar-group">
     <div class="group-tip">📋 ①选择演示场景：点击自动配置参数与故障注入</div>
     <div class="action-bar">
@@ -77,10 +161,14 @@ button:disabled { opacity:0.45 !important; cursor: not-allowed; }
         <button class="btn-red" onclick="runSecond()">③ 发起第二轮试探请求</button>
         <button class="btn-gray" onclick="resetAll()">④ 重置所有舱状态</button>
         <button class="btn-blue" onclick="resetMetricsOnly()">仅重置指标(保留熔断器状态)</button>
+        <span class="info-tip" id="resetInfoTip">💡</span>
+</span>
+
     </div>
     <div class="group-note">💡重置所有舱：清空全部指标、恢复所有舱初始状态，熔断器状态一并清零；「仅重置指标」只清空业务指标与日志，熔断器状态保持不变</div>
 </div>
-
+</div>
+<div id="cabinOverview" class="cabin-overview"></div>
 <div id="container"></div>
 
 <!-- 时序事件可视化区块 -->
@@ -92,7 +180,7 @@ button:disabled { opacity:0.45 !important; cursor: not-allowed; }
         <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#f56c6c;"></span> 熔断打开</span>
         <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#409eff;"></span> 半开试探</span>
         <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#909399;"></span> 降级</span>
-        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#ff4d4f;"></span> 业务报错</span>
+        <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#a8071a;"></span> 业务报错</span>
         <span><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#9b59b6;"></span> 配置变更</span>
     </div>
     <canvas id="timelineCanvas" width="900" height="320" style="border:1px solid #eee;display:block;"></canvas>
@@ -124,6 +212,18 @@ button:disabled { opacity:0.45 !important; cursor: not-allowed; }
 </a>
 </div>
 <script>
+//=====【新增：💡弹窗点击交互，仅此片段，原有业务全部不动】=====
+(function(){
+    const tipEl = document.getElementById("resetInfoTip");
+    const noteEl = document.querySelector(".group-note");
+    if(tipEl && noteEl){
+        tipEl.addEventListener("click", function(e){
+            e.stopPropagation();
+            noteEl.classList.toggle("show");
+        });
+    }
+})();
+
 let lastCabinList = [];
 let localCabinsConfig = [];
 let localFaultConfig = [];
@@ -131,13 +231,14 @@ let isRunning = false;
 let logFilterMode = "all";
 
 let eventList = [];
+let userToggle = {};
 const colorMap = {
     normal:"#67c23a",
     reject:"#e6a23c",
     open:"#f56c6c",
     halfOpen:"#409eff",
     fallback:"#909399",
-    error:"#ff4d4f",
+    error:"#a8071a",
     config:"#9b59b6"
 };
 const typeLabelMap = {
@@ -257,10 +358,10 @@ function renderAllLogs(logs){
     const logFilterKeywords = {
         "all": null,
         "normal": ["业务执行成功", "第一轮请求执行完毕", "第二轮", "等待1.2s"],
-        "reject": ["信号量满", "并发限流拒绝"],
-        "open": ["熔断器切换 Open", "熔断打开", "重新切回 Open"],
-        "halfOpen": ["半开试探"],
-        "fallback": ["触发降级兜底"],
+        "reject": ["信号量满", "并发限流拒绝", "限流拒绝"],
+        "open": ["熔断器切换 Open", "熔断打开", "重新切回 Open", "切换为 Open", "熔断器切换到"],
+        "halfOpen": ["半开试探", "HalfOpen", "试探恢复"],
+        "fallback": ["触发降级兜底", "降级兜底", "降级"],
         "error": ["业务执行报错"],
         "config": ["故障设置", "已更新配置"]
     };
@@ -546,14 +647,59 @@ function renderTimelineSvg() {
 
 
 
+function buildOverviewDOM(list){
+    let html="";
+    for(let idx=0;idx<list.length;idx++){
+        const c = list[idx];
+        html += '<div class="overview-item" data-cabin-idx="'+idx+'" onclick="toggleCabin('+idx+')" title="点击展开/收起详情">';
+        html += '<span class="ov-name">'+c.name+'</span>';
+        html += '<span class="ov-state"></span>';
+        html += '<span class="ov-countdown"></span>';
+        html += '<span class="ov-failrate">失败占比 --</span>';
+        html += '</div>';
+    }
+    const ov = document.getElementById("cabinOverview");
+    if(ov) ov.innerHTML = html;
+}
+function setCabinExpanded(idx, open){
+    const body = document.getElementById("cabin-body-"+idx);
+    if(!body) return;
+    body.classList.toggle("collapsed", !open);
+    const card = document.querySelector('.cabin[data-cabin-idx="'+idx+'"]');
+    if(card){
+        const btn = card.querySelector(".cabin-toggle");
+        if(btn) btn.innerText = open ? "收起" : "详情";
+    }
+    const ovItem = document.querySelector('.overview-item[data-cabin-idx="'+idx+'"]');
+    if(ovItem) ovItem.classList.toggle("is-open", open);
+}
+function toggleCabin(idx){
+    const body = document.getElementById("cabin-body-"+idx);
+    if(!body) return;
+    const next = body.classList.contains("collapsed"); // 当前收起→展开
+    userToggle[idx] = next;
+    setCabinExpanded(idx, next);
+}
 function rebuildCabinsDOM(list){
+    buildOverviewDOM(list);
     let html="";
     for(let idx=0;idx<list.length;idx++){
         const c = list[idx];
         let cls="state-"+c.state;
         let showText = getShowState(c.state);
-        html += '<div class="cabin cabin-card" data-cabin-name="' + c.name + '">';
-        html += '<h3>' + c.name + ' <span class="' + cls + '">' + showText + '</span></h3>';
+        const cwt = c.config.window_type || "fixed";
+        html += '<div class="cabin cabin-card" data-cabin-idx="'+idx+'" data-cabin-name="' + c.name + '">';
+        html += '<div class="cabin-head">';
+        html += '<h3>' + c.name + ' <span class="' + cls + '">' + showText + '</span><span class="cb-countdown"></span></h3>';
+        html += '<div class="head-controls">';
+        html += '<label class="wtype-label" for="wtype_'+idx+'">统计窗口:</label>';
+        html += '<select id="wtype_'+idx+'" onchange="onWindowTypeChange('+idx+')">'
+              + '<option value="fixed"'+(cwt==="fixed"?" selected":"")+'>简单计数</option>'
+              + '<option value="sliding"'+(cwt==="sliding"?" selected":"")+'>滑动统计</option></select>';
+        html += '<button type="button" class="btn-gray cabin-toggle" onclick="toggleCabin('+idx+')">详情</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '<div class="cabin-body collapsed" id="cabin-body-'+idx+'">';
         html += '<div class="metric-grid">';
         html += '<div class="metric-item" data-key="total">总任务: ' + c.metrics.total_task + '</div>';
         html += '<div class="metric-item" data-key="success">成功: ' + c.metrics.success + '</div>';
@@ -561,16 +707,19 @@ function rebuildCabinsDOM(list){
         html += '<div class="metric-item" data-key="cbReject">熔断拒绝: ' + c.metrics.cb_reject + '</div>';
         html += '<div class="metric-item" data-key="bizErr">业务报错: ' + c.metrics.business_error + '</div>';
         html += '<div class="metric-item" data-key="degrade">降级次数: ' + c.metrics.degrade_count + '</div>';
-        html += '<div class="metric-item" data-key="cbstat">窗口统计：成功:-- 失败:-- 当前失败占比:--</div>';
+        html += '<div class="metric-item" data-key="cbstat">窗口统计(固定)：成功:-- 失败:-- 当前失败占比:--</div>';
         html += '</div>';
         html += '<div class="cfg-row">';
-        html += '<label for="maxc_'+idx+'">最大并发:</label><input type="number" id="maxc_'+idx+'" value="'+c.config.max_concurrency+'">';
-        html += '<label for="failp_'+idx+'">失败触发熔断%:</label><input type="number" id="failp_'+idx+'" value="'+c.config.fail_threshold+'">';
-        html += '<label for="win_'+idx+'">统计样本请求数:</label><input type="number" id="win_'+idx+'" value="'+c.config.window_size+'">';
-        html += '<label for="wait_'+idx+'">熔断冷却时间(s):</label><input type="number" id="wait_'+idx+'" value="'+c.config.open_wait_sec+'">';
-        html += '<label for="halfprobe_'+idx+'">半开试探最大请求数:</label><input type="number" id="halfprobe_'+idx+'" value="'+c.config.half_open_max_probe+'">';
-        html += '<label for="normdelay_'+idx+'">正常耗时(ms):</label><input type="number" id="normdelay_'+idx+'" value="'+c.config.normal_delay_ms+'">';
-        html += '<label for="faultdelay_'+idx+'">故障耗时(ms):</label><input type="number" id="faultdelay_'+idx+'" value="'+c.config.fault_delay_ms+'">';
+        html += '<label for="maxc_'+idx+'">最大并发:</label><input type="number" id="maxc_'+idx+'" min="1" value="'+c.config.max_concurrency+'">';
+        html += '<label for="failp_'+idx+'">失败触发熔断%:</label><input type="number" id="failp_'+idx+'" min="0" max="100" value="'+c.config.fail_threshold+'">';
+        html += '<label for="win_'+idx+'" id="winlabel_'+idx+'">'+(cwt==="sliding"?"最少样本数(判定)":"统计样本请求数(结算周期)")+':</label><input type="number" id="win_'+idx+'" min="1" value="'+c.config.window_size+'">';
+        html += '<span id="slide_'+idx+'"'+(cwt==="sliding"?"":" style=\"display:none\"")+'>'
+              + '<label for="slideSec_'+idx+'">滑动窗口时长(s):</label><input type="number" id="slideSec_'+idx+'" min="1" value="'+(c.config.sliding_window_sec||10)+'">'
+              + '<span class="hint">固定10桶滚动，窗口外旧样本自动失效</span></span>';
+        html += '<label for="wait_'+idx+'">熔断冷却时间(s):</label><input type="number" id="wait_'+idx+'" min="1" value="'+c.config.open_wait_sec+'">';
+        html += '<label for="halfprobe_'+idx+'">半开试探最大请求数:</label><input type="number" id="halfprobe_'+idx+'" min="1" value="'+c.config.half_open_max_probe+'">';
+        html += '<label for="normdelay_'+idx+'">正常耗时(ms):</label><input type="number" id="normdelay_'+idx+'" min="0" value="'+c.config.normal_delay_ms+'">';
+        html += '<label for="faultdelay_'+idx+'">故障耗时(ms):</label><input type="number" id="faultdelay_'+idx+'" min="0" value="'+c.config.fault_delay_ms+'">';
         html += '<button class="btn-blue" onclick="applyCfg('+idx+')">应用配置</button>';
         html += '</div>';
         if(c.fault_config){
@@ -582,18 +731,88 @@ function rebuildCabinsDOM(list){
             html += '</div>';
         }
         html += '</div>';
+        html += '</div>';
     }
     document.getElementById("container").innerHTML=html;
 }
 
+// ===== P0-1 参数合法性校验 =====
+let toastTimer = null;
+function showToast(msg, isErr){
+    let el = document.getElementById("toast");
+    if(!el){ el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+    el.textContent = msg;
+    el.classList.toggle("err", !!isErr);
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ el.classList.remove("show"); }, 2600);
+}
+function validateCabinCfg(idx){
+    const fields = [
+        {id:"maxc_"+idx, min:1,  max:null},
+        {id:"failp_"+idx, min:0,  max:100},
+        {id:"win_"+idx,   min:1,  max:null},
+        {id:"wait_"+idx,  min:1,  max:null},
+        {id:"halfprobe_"+idx, min:1, max:null},
+        {id:"normdelay_"+idx, min:0, max:null},
+        {id:"faultdelay_"+idx, min:0, max:null},
+        {id:"slideSec_"+idx, min:1, max:null},
+    ];
+    let bad = false;
+    for(const f of fields){
+        const el = document.getElementById(f.id);
+        if(!el) continue;
+        el.classList.remove("invalid");
+        const v = parseInt(el.value, 10);
+        if(!Number.isFinite(v) || v < f.min || (f.max !== null && v > f.max)){
+            el.classList.add("invalid");
+            bad = true;
+        }
+    }
+    if(bad){
+        showToast("参数非法：并发≥1、百分比0-100、样本≥1、冷却≥1、半开试探≥1、耗时≥0（红框项需修正）", true);
+        return false;
+    }
+    return true;
+}
+// ===== P0-2 熔断 Open 冷却倒计时（以后端 cb_open_remain_ms 为准，前端仅平滑递减） =====
+let openRemainState = {};
+function renderCountdown(idx){
+    const st = openRemainState[idx];
+    const ovCd = document.querySelector('.overview-item[data-cabin-idx="'+idx+'"] .ov-countdown');
+    const cardCd = document.querySelector('.cabin[data-cabin-idx="'+idx+'"] .cb-countdown');
+    if(!st || st.ms <= 0){
+        // 冷却已结束但尚无请求触发 Open→HalfOpen：提示等待请求，避免误以为"卡住"
+        if(st && st.state === "Open"){
+            if(ovCd) ovCd.textContent = "冷却结束 · 等待请求触发半开";
+            if(cardCd) cardCd.textContent = "冷却结束 · 待触发半开";
+        } else {
+            if(ovCd) ovCd.textContent = "";
+            if(cardCd) cardCd.textContent = "";
+        }
+        return;
+    }
+    let remainMs = st.ms - (Date.now() - st.at);
+    if(remainMs < 0) remainMs = 0;
+    const text = "⏳ " + (remainMs/1000).toFixed(1) + "s 后进入半开";
+    if(ovCd) ovCd.textContent = text;
+    if(cardCd) cardCd.textContent = text;
+}
 async function onFaultChange(idx){
     const c = lastCabinList[idx];
     const enableDom = document.getElementById("fault-enable-"+idx);
     const pctDom = document.getElementById("fault-pct-"+idx);
+    const pct = parseInt(pctDom.value||"0", 10);
+    pctDom.classList.remove("invalid");
+    if(!Number.isFinite(pct) || pct < 0 || pct > 100){
+        pctDom.classList.add("invalid");
+        showToast("故障百分比需在 0-100 之间", true);
+        return;
+    }
     const payload = {
         cabin_name: c.name,
         enable: enableDom.checked,
-        fault_percent: parseInt(pctDom.value||"0")
+        fault_percent: pct
     };
     await fetch("/api/setFault",{
         method:"POST",
@@ -621,7 +840,7 @@ async function fetchStatus(){
         }
         for(let idx=0; idx < list.length; idx++){
             const c = list[idx];
-            const cabinDom = document.querySelector('.cabin:nth-child('+(idx+1)+')');
+            const cabinDom = document.querySelector('.cabin[data-cabin-idx="'+idx+'"]');
             if(!cabinDom) continue;
 
             const winSucc = c.cb_window_success;
@@ -647,7 +866,36 @@ async function fetchStatus(){
             cabinDom.querySelector('[data-key="cbReject"]').innerText = "熔断拒绝: "+c.metrics.cb_reject;
             cabinDom.querySelector('[data-key="bizErr"]').innerText = "业务报错: "+c.metrics.business_error;
             cabinDom.querySelector('[data-key="degrade"]').innerText = "降级次数: "+c.metrics.degrade_count;
-            cabinDom.querySelector('[data-key="cbstat"]').innerText = "窗口统计：成功:"+winSucc+" 失败:"+winFail+" 当前失败占比:"+failRateStr;
+            const cwt = c.config.window_type || "fixed";
+            const wtTag = (cwt==="sliding") ? "滑动" : "固定";
+            cabinDom.querySelector('[data-key="cbstat"]').innerText = "窗口统计("+wtTag+")：成功:"+winSucc+" 失败:"+winFail+" 当前失败占比:"+failRateStr;
+            // ===== 状态总览条同步 =====
+            const ovItem = document.querySelector('.overview-item[data-cabin-idx="'+idx+'"]');
+            if(ovItem){
+                const ovState = ovItem.querySelector(".ov-state");
+                if(ovState){ ovState.className = "ov-state "+cls; ovState.innerText = showText; }
+                const ovRate = ovItem.querySelector(".ov-failrate");
+                if(ovRate) ovRate.innerText = "失败占比 " + failRateStr;
+                ovItem.classList.remove("is-abnormal","is-halfopen");
+                if(c.state === "Open") ovItem.classList.add("is-abnormal");
+                if(c.state === "HalfOpen"){ ovItem.classList.add("is-abnormal","is-halfopen"); }
+            }
+            // ===== 异常优先：Open/HalfOpen 自动展开并高亮，正常舱默认收起 =====
+            cabinDom.classList.remove("cabin-abnormal","cabin-halfopen");
+            if(c.state === "Open") cabinDom.classList.add("cabin-abnormal");
+            if(c.state === "HalfOpen"){ cabinDom.classList.add("cabin-abnormal","cabin-halfopen"); }
+            if(c.state === "Open" || c.state === "HalfOpen"){
+                setCabinExpanded(idx, true);
+            } else {
+                setCabinExpanded(idx, userToggle[idx] === true);
+            }
+            // ===== P0-2 熔断冷却倒计时同步（以后端真实剩余时间为准） =====
+            openRemainState[idx] = {
+                ms: (c.state === "Open") ? (c.cb_open_remain_ms||0) : 0,
+                at: Date.now(),
+                state: c.state
+            };
+            renderCountdown(idx);
 
             const maxcInput = document.getElementById("maxc_"+idx);
             const failpInput = document.getElementById("failp_"+idx);
@@ -657,20 +905,20 @@ async function fetchStatus(){
             const normDelayInput = document.getElementById("normdelay_"+idx);
             const faultDelayInput = document.getElementById("faultdelay_"+idx);
             const localCfg = localCabinsConfig[idx];
-            if(document.activeElement !== maxcInput) maxcInput.value = localCfg.MaxConcurrency;
-            if(document.activeElement !== failpInput) failpInput.value = localCfg.FailThreshold;
-            if(document.activeElement !== winInput) winInput.value = localCfg.WindowSize;
-            if(document.activeElement !== waitInput) waitInput.value = localCfg.OpenWaitSec;
-            if(document.activeElement !== halfProbeInput) halfProbeInput.value = localCfg.HalfOpenMaxProbe;
-            if(document.activeElement !== normDelayInput) normDelayInput.value = localCfg.NormalDelayMs;
-            if(document.activeElement !== faultDelayInput) faultDelayInput.value = localCfg.FaultDelayMs;
+            if(document.activeElement !== maxcInput){ maxcInput.value = localCfg.MaxConcurrency; maxcInput.classList.remove("invalid"); }
+            if(document.activeElement !== failpInput){ failpInput.value = localCfg.FailThreshold; failpInput.classList.remove("invalid"); }
+            if(document.activeElement !== winInput){ winInput.value = localCfg.WindowSize; winInput.classList.remove("invalid"); }
+            if(document.activeElement !== waitInput){ waitInput.value = localCfg.OpenWaitSec; waitInput.classList.remove("invalid"); }
+            if(document.activeElement !== halfProbeInput){ halfProbeInput.value = localCfg.HalfOpenMaxProbe; halfProbeInput.classList.remove("invalid"); }
+            if(document.activeElement !== normDelayInput){ normDelayInput.value = localCfg.NormalDelayMs; normDelayInput.classList.remove("invalid"); }
+            if(document.activeElement !== faultDelayInput){ faultDelayInput.value = localCfg.FaultDelayMs; faultDelayInput.classList.remove("invalid"); }
 
             const localFault = localFaultConfig[idx];
             if(localFault){
                 const chkEnable = document.getElementById("fault-enable-"+idx);
                 const inputPct = document.getElementById("fault-pct-"+idx);
                 if(document.activeElement !== chkEnable) chkEnable.checked = localFault.Enable;
-                if(document.activeElement !== inputPct) inputPct.value = localFault.FaultPercent;
+                if(document.activeElement !== inputPct){ inputPct.value = localFault.FaultPercent; inputPct.classList.remove("invalid"); }
             }
         }
         renderAllLogs(payload.logs);
@@ -683,7 +931,15 @@ async function fetchStatus(){
     }
 }
 
+// 切换统计窗口类型时，动态更新 window_size 语义标签并显隐"滑动窗口时长"输入
+function onWindowTypeChange(idx){
+    const t = document.getElementById("wtype_"+idx).value;
+    document.getElementById("winlabel_"+idx).innerText = (t==="sliding") ? "最少样本数(判定)" : "统计样本请求数(结算周期)";
+    document.getElementById("slide_"+idx).style.display = (t==="sliding") ? "" : "none";
+}
+
 async function applyCfg(idx){
+    if(!validateCabinCfg(idx)) return;
     const payload = {
         index: idx,
         cfg:{
@@ -694,6 +950,8 @@ async function applyCfg(idx){
             half_open_max_probe: parseInt(document.getElementById("halfprobe_"+idx).value),
             normal_delay_ms: parseInt(document.getElementById("normdelay_"+idx).value),
             fault_delay_ms: parseInt(document.getElementById("faultdelay_"+idx).value),
+            window_type: document.getElementById("wtype_"+idx).value,
+            sliding_window_sec: parseInt(document.getElementById("slideSec_"+idx).value),
         }
     };
     await fetch("/api/applyConfig",{
@@ -709,8 +967,9 @@ async function sceneA(){
     isRunning = true; setButtonsDisabled(true);
     try{
         await fetch("/api/reset");
+        userToggle = {};
         await fetch("/api/applyConfig",{method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({index:0,cfg:{max_concurrency:2,fail_threshold:50,window_size:40,open_wait_sec:1,half_open_max_probe:2,normal_delay_ms:0,fault_delay_ms:0}})});
+            body:JSON.stringify({index:0,cfg:{max_concurrency:2,fail_threshold:50,window_size:40,open_wait_sec:1,half_open_max_probe:2,normal_delay_ms:100,fault_delay_ms:800}})});
         await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
             body:JSON.stringify({cabin_name:"营销舱",enable:false,fault_percent:0})});
         await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -724,8 +983,9 @@ async function sceneB(){
     isRunning = true; setButtonsDisabled(true);
     try{
         await fetch("/api/reset");
+        userToggle = {};
         await fetch("/api/applyConfig",{method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({index:1,cfg:{max_concurrency:40,fail_threshold:50,window_size:40,open_wait_sec:30,half_open_max_probe:2,normal_delay_ms:0,fault_delay_ms:0}})});
+            body:JSON.stringify({index:1,cfg:{max_concurrency:40,fail_threshold:50,window_size:40,open_wait_sec:30,half_open_max_probe:2,normal_delay_ms:50,fault_delay_ms:800}})});
         await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
             body:JSON.stringify({cabin_name:"营销舱",enable:true,fault_percent:100})});
         await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -739,8 +999,9 @@ async function sceneC(){
     isRunning = true; setButtonsDisabled(true);
     try{
         await fetch("/api/reset");
+        userToggle = {};
         await fetch("/api/applyConfig",{method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({index:2,cfg:{max_concurrency:5,fail_threshold:30,window_size:20,open_wait_sec:2,half_open_max_probe:2,normal_delay_ms:0,fault_delay_ms:0}})});
+            body:JSON.stringify({index:2,cfg:{max_concurrency:5,fail_threshold:30,window_size:20,open_wait_sec:2,half_open_max_probe:2,normal_delay_ms:50,fault_delay_ms:800}})});
         await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
             body:JSON.stringify({cabin_name:"报表辅助舱",enable:true,fault_percent:100})});
         await fetch("/api/setFault",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -779,6 +1040,7 @@ async function runSecond(){
 async function resetAll(){
     await fetch("/api/reset");
     eventList = [];
+    userToggle = {};
     await fetchStatus();
 }
 
@@ -794,6 +1056,12 @@ async function resetMetricsOnly(){
 window.onload = async function(){
     await fetchStatus();
     setInterval(fetchStatus, 800);
+    document.getElementById("container").addEventListener("input", function(e){
+        if(e.target && e.target.classList) e.target.classList.remove("invalid");
+    });
+    setInterval(function(){
+        for(const idx in openRemainState){ renderCountdown(idx); }
+    }, 200);
     document.getElementById("logFilterSel").onchange = function(){
         logFilterMode = this.value;
         fetchStatus();

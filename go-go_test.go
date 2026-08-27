@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -43,16 +45,16 @@ func TestLogTimelineEvent(t *testing.T) {
 		t.Error("logTimelineEvent 字段写入不正确")
 	}
 
-	// 测试超过200条自动截断
+	// 测试超过600条自动截断
 	resetTimelineEvents()
-	for i := 0; i < 220; i++ {
+	for i := 0; i < 650; i++ {
 		logTimelineEvent("A", "normal", "msg")
 	}
 	timelineMu.Lock()
 	afterLen := len(globalTimelineEvents)
 	timelineMu.Unlock()
-	if afterLen != 200 {
-		t.Errorf("超过200应截断为200，实际=%d", afterLen)
+	if afterLen != 600 {
+		t.Errorf("超过600应截断为600，实际=%d", afterLen)
 	}
 }
 
@@ -560,4 +562,322 @@ func TestFullFlow_Integration(t *testing.T) {
 	t.Logf("集成测试结束，营销舱状态=%s，降级次数=%d，时序事件数量=%d",
 		marketingCabinView.State, marketingCabinView.Metrics.DegradeCount, len(payload.Events))
 	resetFaultConfig()
+}
+
+// =========== 新增：覆盖 P0-2 / 报错池 / 熔断切换日志 / 报错详情 的针对性测试 ===========
+// TestApiStatusOpenRemainMs 校验 /api/status 新增 cb_open_remain_ms 字段
+func TestApiStatusOpenRemainMs(t *testing.T) {
+	resetFaultConfig()
+	resetTimelineEvents()
+	cabinOrder.Reset()
+	cabinMarketing.Reset()
+	cabinReport.Reset()
+	// 非Open状态：所有舱 remain 应为 0
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	apiStatus(rec, req)
+	var payload struct {
+		Cabins []CabinView `json:"cabins"`
+	}
+	if err := json.NewDecoder(rec.Result().Body).Decode(&payload); err != nil {
+		t.Fatalf("decode err: %v", err)
+	}
+	for _, v := range payload.Cabins {
+		if v.CbOpenRemainMs != 0 {
+			t.Errorf("非Open状态 cb_open_remain_ms 应为0，%s got %d", v.Name, v.CbOpenRemainMs)
+		}
+	}
+	// 手动置报表舱为Open：cb_open_remain_ms 应 > 0
+	cabinReport.cb.state.Store(int32(StateOpen))
+	cabinReport.cb.lastOpenTime.Store(time.Now().UnixMilli())
+	req2 := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec2 := httptest.NewRecorder()
+	apiStatus(rec2, req2)
+	var payload2 struct {
+		Cabins []CabinView `json:"cabins"`
+	}
+	if err := json.NewDecoder(rec2.Result().Body).Decode(&payload2); err != nil {
+		t.Fatalf("decode err: %v", err)
+	}
+	for _, v := range payload2.Cabins {
+		if v.Name == "报表辅助舱" && v.CbOpenRemainMs <= 0 {
+			t.Errorf("Open状态 cb_open_remain_ms 应>0，got %d", v.CbOpenRemainMs)
+		}
+	}
+	cabinReport.cb.state.Store(int32(StateClosed))
+}
+// TestRandomBizErrorPool 校验真实世界风格报错池：命中模板、带请求ID
+func TestRandomBizErrorPool(t *testing.T) {
+	for _, cabin := range []string{"下单核心舱", "营销舱", "报表辅助舱"} {
+		for i := 0; i < 5; i++ {
+			err := randomBizError(cabin, 888)
+			if err == nil {
+				t.Fatalf("%s randomBizError 不应返回nil", cabin)
+			}
+			if !strings.Contains(err.Error(), "888") {
+				t.Errorf("%s 报错应包含请求ID 888，got %q", cabin, err.Error())
+			}
+		}
+	}
+	if err := randomBizError("不存在舱", 1); err == nil {
+		t.Error("未知舱名应返回兜底内部错误")
+	}
+}
+// TestCircuitBreaker_TransitionLogOnce 校验熔断切换点日志 + CAS防重
+func TestCircuitBreaker_TransitionLogOnce(t *testing.T) {
+	// Closed→Open：日志应带窗口失败率且只记录一次
+	resetTimelineEvents()
+	cb := NewCircuitBreaker(30, 20, 100*time.Millisecond, 3)
+	for i := 0; i < 25; i++ {
+		cb.OnResult(true)
+	}
+	timelineMu.Lock()
+	openCnt := 0
+	for _, e := range globalTimelineEvents {
+		if e.EvType == "open" && strings.Contains(e.Message, "熔断器切换 Open（熔断打开）") {
+			openCnt++
+			if !strings.Contains(e.Message, "窗口失败率") {
+				t.Errorf("Closed→Open日志应带失败率，got %q", e.Message)
+			}
+		}
+	}
+	timelineMu.Unlock()
+	if openCnt != 1 {
+		t.Errorf("Closed→Open切换日志应恰好1条，got %d", openCnt)
+	}
+	// Open→HalfOpen：并发调用Allow，切换日志应只记录一次
+	resetTimelineEvents()
+	cb2 := NewCircuitBreaker(30, 20, 50*time.Millisecond, 3)
+	cb2.state.Store(int32(StateOpen))
+	cb2.lastOpenTime.Store(time.Now().UnixMilli())
+	time.Sleep(60 * time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); cb2.Allow() }()
+	}
+	wg.Wait()
+	timelineMu.Lock()
+	halfOpenCnt := 0
+	for _, e := range globalTimelineEvents {
+		if e.EvType == "halfOpen" && strings.Contains(e.Message, "熔断冷却期结束，进入 HalfOpen 半开试探") {
+			halfOpenCnt++
+		}
+	}
+	timelineMu.Unlock()
+	if halfOpenCnt != 1 {
+		t.Errorf("Open→HalfOpen切换日志应恰好1条（CAS防重），got %d", halfOpenCnt)
+	}
+}
+// TestRunErrorLogDetail 校验Run报错日志带上真实错误详情（报错池改造）
+func TestRunErrorLogDetail(t *testing.T) {
+	resetTimelineEvents()
+	cabin := NewCabin("日志测试舱", 10, NewCircuitBreaker(50, 10, 1*time.Second, 3), 0, 0)
+	realErr := errors.New("HBase region 不可用：行键查询失败 (report=9, table=rpt_daily, region=rs-02)")
+	_ = cabin.Run(context.Background(), func(ctx context.Context) error { return realErr })
+	timelineMu.Lock()
+	found := false
+	for _, e := range globalTimelineEvents {
+		if e.EvType == "error" && strings.Contains(e.Message, realErr.Error()) {
+			found = true
+		}
+	}
+	timelineMu.Unlock()
+	if !found {
+		t.Error("Run报错日志应包含真实错误详情")
+	}
+}
+
+// =========== 新增：可切换统计窗口（fixed/sliding）针对性测试 ===========
+// TestSlidingWindow_Basic 校验滑动窗口记录与统计
+func TestSlidingWindow_Basic(t *testing.T) {
+	sw := NewSlidingWindow(10)
+	sw.Record(false)
+	sw.Record(false)
+	sw.Record(true)
+	succ, fail := sw.Stats()
+	if succ != 2 || fail != 1 {
+		t.Errorf("期望 succ=2 fail=1，got succ=%d fail=%d", succ, fail)
+	}
+}
+
+// TestSlidingWindow_Expire 校验超出窗口时长的旧桶被忽略（时间衰减）
+func TestSlidingWindow_Expire(t *testing.T) {
+	sw := NewSlidingWindow(10) // 10s 窗口，10 桶，每桶 1s
+	sw.Record(false)           // 记录一次失败
+	// 把该桶起始时间戳拨到超过整个窗口时长 → 统计时应被忽略
+	sw.mu.Lock()
+	now := time.Now().UnixMilli()
+	for i := range sw.buckets {
+		if sw.buckets[i].startMs != 0 {
+			sw.buckets[i].startMs = now - 11*1000 // 超过10s窗口
+		}
+	}
+	sw.mu.Unlock()
+	succ, fail := sw.Stats()
+	if succ != 0 || fail != 0 {
+		t.Errorf("过期桶应被忽略，got succ=%d fail=%d", succ, fail)
+	}
+}
+
+// TestCircuitBreaker_SlidingTrip 校验滑动窗口达到最少样本后按失败率熔断
+func TestCircuitBreaker_SlidingTrip(t *testing.T) {
+	cb := NewCircuitBreakerWindowType("sliding", 50, 5, 100*time.Millisecond, 3, 10)
+	// 4失败 + 1成功：总样本5>=5，失败率80%>=50% → Open
+	for i := 0; i < 4; i++ {
+		cb.OnResult(true)
+	}
+	cb.OnResult(false)
+	if cb.GetState() != StateOpen {
+		t.Errorf("期望 Open，got %s", cb.GetState())
+	}
+}
+
+// TestCircuitBreaker_SlidingNoTripFewSamples 校验样本不足不熔断（防单点误判）
+func TestCircuitBreaker_SlidingNoTripFewSamples(t *testing.T) {
+	cb := NewCircuitBreakerWindowType("sliding", 50, 10, 100*time.Millisecond, 3, 10)
+	// 5失败，总样本5<10，未达最少样本门槛 → 即使100%失败率也不熔断
+	for i := 0; i < 5; i++ {
+		cb.OnResult(true)
+	}
+	if cb.GetState() != StateClosed {
+		t.Errorf("样本不足不应熔断，got %s", cb.GetState())
+	}
+}
+
+// TestCircuitBreaker_SlidingHalfOpen 校验滑动窗口下半开状态切换仍正常
+func TestCircuitBreaker_SlidingHalfOpen(t *testing.T) {
+	cb := NewCircuitBreakerWindowType("sliding", 50, 5, 100*time.Millisecond, 3, 10)
+	cb.state.Store(int32(StateHalfOpen))
+	cb.OnResult(false) // 半开试探成功 → Closed
+	if cb.GetState() != StateClosed {
+		t.Error("sliding模式HalfOpen成功应恢复Closed")
+	}
+	cb.state.Store(int32(StateHalfOpen))
+	cb.OnResult(true) // 半开试探失败 → Open
+	if cb.GetState() != StateOpen {
+		t.Error("sliding模式HalfOpen失败应切回Open")
+	}
+}
+
+// TestApiApplyConfigWindowType 校验 applyConfig 切换窗口类型 + status 回显 + 滑动窗口统计来源
+func TestApiApplyConfigWindowType(t *testing.T) {
+	payload := `{"index":2,"cfg":{"max_concurrency":8,"fail_threshold":50,"window_size":5,"open_wait_sec":1,"half_open_max_probe":2,"normal_delay_ms":0,"fault_delay_ms":0,"window_type":"sliding","sliding_window_sec":10}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/applyConfig", bytes.NewBufferString(payload))
+	rec := httptest.NewRecorder()
+	apiApplyConfig(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("applyConfig 失败: %d", rec.Code)
+	}
+	// status 回显窗口类型
+	req2 := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec2 := httptest.NewRecorder()
+	apiStatus(rec2, req2)
+	var payload2 struct {
+		Cabins []CabinView `json:"cabins"`
+	}
+	if err := json.NewDecoder(rec2.Result().Body).Decode(&payload2); err != nil {
+		t.Fatalf("decode err: %v", err)
+	}
+	var report *CabinView
+	for i := range payload2.Cabins {
+		if payload2.Cabins[i].Name == "报表辅助舱" {
+			report = &payload2.Cabins[i]
+		}
+	}
+	if report == nil {
+		t.Fatal("未找到报表辅助舱")
+	}
+	if report.Config.WindowType != "sliding" {
+		t.Errorf("window_type 应为 sliding，got %q", report.Config.WindowType)
+	}
+	if report.Config.SlidingWindowSec != 10 {
+		t.Errorf("sliding_window_sec 应为10，got %d", report.Config.SlidingWindowSec)
+	}
+	// 滑动窗口模式下写入结果，cb_window 统计应来自滑动窗口
+	cabinReport.cb.OnResult(false)
+	cabinReport.cb.OnResult(false)
+	cabinReport.cb.OnResult(true)
+	req3 := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec3 := httptest.NewRecorder()
+	apiStatus(rec3, req3)
+	var payload3 struct {
+		Cabins []CabinView `json:"cabins"`
+	}
+	if err := json.NewDecoder(rec3.Result().Body).Decode(&payload3); err != nil {
+		t.Fatalf("decode err: %v", err)
+	}
+	for _, v := range payload3.Cabins {
+		if v.Name == "报表辅助舱" {
+			if v.CbWindowSuccess != 2 || v.CbWindowFail != 1 {
+				t.Errorf("滑动窗口统计应 succ=2 fail=1，got succ=%d fail=%d", v.CbWindowSuccess, v.CbWindowFail)
+			}
+		}
+	}
+	// 复位报表舱回默认（fixed），避免影响后续测试
+	cabinReport = NewCabin("报表辅助舱", 8, NewCircuitBreaker(40, 30, 1*time.Second, 3), 0, 0)
+}
+
+// TestFullFlow_SlidingWindow 滑动窗口模式完整流程：故障注入→滑动窗口统计→熔断
+func TestFullFlow_SlidingWindow(t *testing.T) {
+	resetFaultConfig()
+	resetTimelineEvents()
+	cabinOrder.Reset()
+	cabinMarketing.Reset()
+	cabinReport.Reset()
+	// 报表舱：滑动窗口 window_size=5 阈值50，100%故障，并发放足让25个请求全部执行
+	faultMu.Lock()
+	faultConfig["报表辅助舱"] = &CabinFaultConfig{Enable: true, FaultPercent: 100}
+	faultMu.Unlock()
+	cabinReport = NewCabin("报表辅助舱", 30, NewCircuitBreakerWindowType("sliding", 50, 5, 2*time.Second, 3, 10), 0, 50)
+	// 跑第一轮：25个请求全部失败 → 滑动窗口样本25>=5 失败率100% → 熔断Open
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/runFirst", nil)
+	apiRunFirst(rec, req)
+	if cabinReport.cb.GetState() != StateOpen {
+		t.Errorf("滑动窗口下高失败率应熔断Open，got %s", cabinReport.cb.GetState())
+	}
+	succ, fail := cabinReport.cb.WindowStats()
+	if succ != 0 || fail < 20 {
+		t.Errorf("滑动窗口统计应 成功=0 失败>=20，got succ=%d fail=%d", succ, fail)
+	}
+	// 复位报表舱与故障
+	cabinReport = NewCabin("报表辅助舱", 8, NewCircuitBreaker(40, 30, 1*time.Second, 3), 0, 0)
+	resetFaultConfig()
+}
+
+// TestApiApplyConfigEmptyWindowType 校验 window_type 缺省按 fixed 处理（兼容场景按钮旧配置）
+func TestApiApplyConfigEmptyWindowType(t *testing.T) {
+	payload := `{"index":0,"cfg":{"max_concurrency":20,"fail_threshold":50,"window_size":40,"open_wait_sec":1,"half_open_max_probe":2,"normal_delay_ms":100,"fault_delay_ms":800}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/applyConfig", bytes.NewBufferString(payload))
+	rec := httptest.NewRecorder()
+	apiApplyConfig(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("无window_type的配置应200，got %d: %s", rec.Code, rec.Body.String())
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec2 := httptest.NewRecorder()
+	apiStatus(rec2, req2)
+	var payload2 struct {
+		Cabins []CabinView `json:"cabins"`
+	}
+	if err := json.NewDecoder(rec2.Result().Body).Decode(&payload2); err != nil {
+		t.Fatalf("decode err: %v", err)
+	}
+	for _, c := range payload2.Cabins {
+		if c.Name == "下单核心舱" && c.Config.WindowType != "fixed" {
+			t.Errorf("缺省 window_type 应为 fixed，got %q", c.Config.WindowType)
+		}
+	}
+}
+
+// TestApiApplyConfigInvalidWindowType 校验非法 window_type 返回400
+func TestApiApplyConfigInvalidWindowType(t *testing.T) {
+	payload := `{"index":0,"cfg":{"max_concurrency":20,"fail_threshold":50,"window_size":40,"open_wait_sec":1,"half_open_max_probe":2,"normal_delay_ms":0,"fault_delay_ms":0,"window_type":"xxx","sliding_window_sec":10}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/applyConfig", bytes.NewBufferString(payload))
+	rec := httptest.NewRecorder()
+	apiApplyConfig(rec, req)
+	if rec.Code != 400 {
+		t.Errorf("非法 window_type 应400，got %d", rec.Code)
+	}
 }

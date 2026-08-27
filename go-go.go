@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed" // <------【新增】这一行，go内置包，用来把文件打进二进制
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 
 	"golang.org/x/sync/semaphore"
 )
+
+//go:embed index.html
+var embedIndexHTML []byte // <------ 编译阶段读取同目录下index.html，内容存到这个字节切片变量里面
 
 const (
 	colorRed   = "\033[31m"
@@ -29,6 +33,9 @@ type CabinConfig struct {
 	HalfOpenMaxProbe uint64 `json:"half_open_max_probe"` //新增：半开最大试探请求数
 	NormalDelayMs    int    `json:"normal_delay_ms"`     //✅新增：正常情况延时ms
 	FaultDelayMs     int    `json:"fault_delay_ms"`      //✅新增：故障情况延时ms
+	//====新增：可切换熔断统计窗口====
+	WindowType       string `json:"window_type"`        // fixed=简单计数窗口 / sliding=滑动统计窗口
+	SlidingWindowSec int    `json:"sliding_window_sec"` // 滑动窗口时长(秒)，仅 window_type=sliding 生效
 }
 
 type CabinMetrics struct {
@@ -61,29 +68,168 @@ func (s State) String() string {
 	}
 }
 
+// SlidingWindow 滑动统计窗口（时间桶环形数组）
+// 总时长 windowSec 秒，均分 bucketCount 个时间桶；请求按当前时间落入对应桶，
+// 超过窗口时长的旧桶在统计时自动忽略，实现"时间衰减、滚动推进"（无需手动清零）。
+type windowBucket struct {
+	startMs int64 // 桶起始时间戳(ms)，0 表示尚未使用
+	success uint64
+	failure uint64
+}
+
+type SlidingWindow struct {
+	bucketCount int
+	bucketMs    int64
+	buckets     []windowBucket
+	mu          sync.Mutex
+}
+
+// NewSlidingWindow 创建滑动统计窗口，windowSec 为窗口总时长(秒)，内部固定拆 10 个时间桶
+func NewSlidingWindow(windowSec int) *SlidingWindow {
+	const bucketCount = 10
+	ms := int64(windowSec) * 1000 / bucketCount
+	if ms < 1 {
+		ms = 1
+	}
+	return &SlidingWindow{
+		bucketCount: bucketCount,
+		bucketMs:    ms,
+		buckets:     make([]windowBucket, bucketCount),
+	}
+}
+
+// Record 记录一次成功/失败到当前时间桶
+func (sw *SlidingWindow) Record(isFail bool) {
+	now := time.Now().UnixMilli()
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	idx := int((now / sw.bucketMs) % int64(sw.bucketCount))
+	b := &sw.buckets[idx]
+	// 该桶槽位已滚满一圈（内容已超出整个窗口时长）→ 复用前重置
+	if b.startMs == 0 || now-b.startMs >= sw.bucketMs*int64(sw.bucketCount) {
+		b.startMs = now
+		b.success, b.failure = 0, 0
+	}
+	if isFail {
+		b.failure++
+	} else {
+		b.success++
+	}
+}
+
+// Stats 返回滑动窗口内（最近 windowSec 秒）的成功/失败总数
+func (sw *SlidingWindow) Stats() (success, failure uint64) {
+	now := time.Now().UnixMilli()
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	windowMs := sw.bucketMs * int64(sw.bucketCount)
+	for _, b := range sw.buckets {
+		if b.startMs == 0 || now-b.startMs >= windowMs {
+			continue // 空桶或过期桶忽略
+		}
+		success += b.success
+		failure += b.failure
+	}
+	return success, failure
+}
+
 type CircuitBreaker struct {
 	state               atomic.Int32
-	successCount        atomic.Uint64
-	failureCount        atomic.Uint64
+	successCount        atomic.Uint64 // fixed简单计数窗口：成功数
+	failureCount        atomic.Uint64 // fixed简单计数窗口：失败数
 	thresholdFailurePct uint64
 	windowSize          uint64
-	openWaitDuration    time.Duration
-	lastOpenTime        atomic.Int64
+	//====新增：可切换熔断统计窗口====
+	windowType       string         // fixed=简单计数窗口 / sliding=滑动统计窗口
+	sliding          *SlidingWindow // 滑动统计窗口（window_type=sliding 时非nil）
+	slidingWindowSec int            // 滑动窗口时长(秒)
+	openWaitDuration time.Duration
+	lastOpenTime     atomic.Int64
 	//====新增：半开试探配额控制====
 	halfOpenMaxProbe  uint64        // 半开最大允许试探请求数
 	halfOpenProbeUsed atomic.Uint64 // 当前半开已经放行试探请求计数
 }
 
+// NewCircuitBreaker 创建简单计数窗口（fixed）熔断器，保持原有语义
 func NewCircuitBreaker(failurePct uint64, window uint64, openWait time.Duration, halfOpenMaxProbe uint64) *CircuitBreaker {
+	return NewCircuitBreakerWindowType("fixed", failurePct, window, openWait, halfOpenMaxProbe, 10)
+}
+
+// NewCircuitBreakerWindowType 创建指定统计窗口类型的熔断器
+// windowType: "fixed"简单计数窗口 / "sliding"滑动统计窗口；slidingSec 为滑动窗口时长(秒，默认10)
+func NewCircuitBreakerWindowType(windowType string, failurePct uint64, window uint64, openWait time.Duration, halfOpenMaxProbe uint64, slidingSec int) *CircuitBreaker {
+	if windowType != "sliding" {
+		windowType = "fixed"
+	}
+	if slidingSec < 1 {
+		slidingSec = 10
+	}
 	cb := &CircuitBreaker{
 		thresholdFailurePct: failurePct,
 		windowSize:          window,
 		openWaitDuration:    openWait,
-		halfOpenMaxProbe:    halfOpenMaxProbe, //半开最大试探配额
+		halfOpenMaxProbe:    halfOpenMaxProbe,
+		windowType:          windowType,
+		slidingWindowSec:    slidingSec,
+	}
+	if windowType == "sliding" {
+		cb.sliding = NewSlidingWindow(slidingSec)
 	}
 	cb.state.Store(int32(StateClosed))
 	cb.halfOpenProbeUsed.Store(0)
 	return cb
+}
+
+// GetWindowType 返回熔断器当前统计窗口类型
+func (cb *CircuitBreaker) GetWindowType() string {
+	return cb.windowType
+}
+
+// recordWindow 把一次结果记录进当前统计窗口（fixed 简单计数 / sliding 滑动时间桶）
+func (cb *CircuitBreaker) recordWindow(isFail bool) {
+	if cb.sliding != nil {
+		cb.sliding.Record(isFail)
+		return
+	}
+	// fixed简单计数窗口：攒满 windowSize 个样本先清零再记录（保留原语义）
+	succ := cb.successCount.Load()
+	fail := cb.failureCount.Load()
+	if succ+fail >= cb.windowSize {
+		cb.successCount.Store(0)
+		cb.failureCount.Store(0)
+	}
+	if isFail {
+		cb.failureCount.Add(1)
+	} else {
+		cb.successCount.Add(1)
+	}
+}
+
+// windowFailRate 返回当前窗口失败率(%)与样本总数
+func (cb *CircuitBreaker) windowFailRate() (failRate, total uint64) {
+	if cb.sliding != nil {
+		succ, fail := cb.sliding.Stats()
+		total = succ + fail
+		if total == 0 {
+			return 0, 0
+		}
+		return fail * 100 / total, total
+	}
+	succ := cb.successCount.Load()
+	fail := cb.failureCount.Load()
+	total = succ + fail
+	if total == 0 {
+		return 0, 0
+	}
+	return fail * 100 / total, total
+}
+
+// WindowStats 返回当前窗口成功/失败数（供状态接口展示）
+func (cb *CircuitBreaker) WindowStats() (succ, fail uint64) {
+	if cb.sliding != nil {
+		return cb.sliding.Stats()
+	}
+	return cb.successCount.Load(), cb.failureCount.Load()
 }
 
 func (cb *CircuitBreaker) GetState() State {
@@ -98,10 +244,11 @@ func (cb *CircuitBreaker) Allow() bool {
 	case StateOpen:
 		elapsed := time.Since(time.UnixMilli(cb.lastOpenTime.Load()))
 		if elapsed >= cb.openWaitDuration {
-			// 从Open切换进入HalfOpen：重置试探已使用计数器
-			cb.halfOpenProbeUsed.Store(0)
-			cb.state.Store(int32(StateHalfOpen))
-			// 切换后的第一个请求走下面HalfOpen分支做配额判断
+			// 从Open切换进入HalfOpen：原子CAS保证只切换/记录一次
+			if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
+				cb.halfOpenProbeUsed.Store(0)
+				logTimelineEvent("熔断器全局", "halfOpen", "熔断冷却期结束，进入 HalfOpen 半开试探")
+			}
 		}
 		return false
 
@@ -120,44 +267,36 @@ func (cb *CircuitBreaker) Allow() bool {
 }
 
 func (cb *CircuitBreaker) OnResult(isFail bool) {
-	succ := cb.successCount.Load()
-	fail := cb.failureCount.Load()
-	total := succ + fail
-	if total >= cb.windowSize {
-		cb.successCount.Store(0)
-		cb.failureCount.Store(0)
-		succ, fail, total = 0, 0, 0
-	}
-	if isFail {
-		cb.failureCount.Add(1)
-		fail++
-	} else {
-		cb.successCount.Add(1)
-		succ++
-	}
-	total = succ + fail
+	cb.recordWindow(isFail)
 	st := State(cb.state.Load())
 	switch st {
 	case StateClosed:
-		if total > 0 {
-			failRate := fail * 100 / total
-			if failRate >= cb.thresholdFailurePct {
-				cb.state.Store(int32(StateOpen))
+		failRate, total := cb.windowFailRate()
+		// 判定门槛：滑动窗口要求窗口内样本达到 windowSize 才判定（防单点误判）；
+		// 固定窗口维持原语义（只要有样本即按当前累计失败率判定）
+		gate := total > 0
+		if cb.sliding != nil {
+			gate = total >= cb.windowSize
+		}
+		if gate && failRate >= cb.thresholdFailurePct {
+			// 原子CAS保证只切换/记录一次
+			if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
 				cb.lastOpenTime.Store(time.Now().UnixMilli())
-				// onEventLog("熔断器切换 Open（熔断打开）")
-				logTimelineEvent("熔断器全局", "open", "熔断器切换 Open（熔断打开）") //canvas时序事件图功能
+				logTimelineEvent("熔断器全局", "open", fmt.Sprintf("熔断器切换 Open（熔断打开）：窗口失败率 %d%% 达到阈值 %d%%", failRate, cb.thresholdFailurePct)) //canvas时序事件图功能
 			}
 		}
 	case StateHalfOpen:
 		if isFail {
-			cb.state.Store(int32(StateOpen))
-			cb.lastOpenTime.Store(time.Now().UnixMilli())
-			// onEventLog("半开试探失败，重新切回 Open 熔断")
-			logTimelineEvent("熔断器全局", "open", "半开试探失败，重新切回 Open 熔断") //canvas时序事件图功能
+			// 原子CAS保证只切换/记录一次
+			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
+				cb.lastOpenTime.Store(time.Now().UnixMilli())
+				logTimelineEvent("熔断器全局", "open", "半开试探失败，熔断器重新切回 Open（继续阻断）") //canvas时序事件图功能
+			}
 		} else {
-			cb.state.Store(int32(StateClosed))
-			// onEventLog("半开试探成功，恢复 Closed 正常状态")
-			logTimelineEvent("熔断器全局", "halfOpen", "半开试探成功，恢复 Closed 正常状态") //canvas时序事件图功能
+			// 原子CAS保证只切换/记录一次
+			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
+				logTimelineEvent("熔断器全局", "halfOpen", "半开试探成功，熔断器恢复 Closed 正常状态") //canvas时序事件图功能
+			}
 		}
 	case StateOpen:
 	}
@@ -242,12 +381,14 @@ func (c *BusinessCabin) Run(ctx context.Context, fn func(ctx context.Context) er
 		execErr = fn(ctxT)
 	}()
 
-	// ✅新增：舱配置驱动延时
+	// ✅新增：舱配置驱动延时 + 完成时序随机抖动
+	// 延时 = 配置RTT + 随机0~60ms：请求全部并发提交保持"突发"，让限流/熔断效果可见；
+	// 由每个请求的随机耗时把泳道图完成事件自然错开，便于观察实验过程（替代旧的"提交侧爬坡抖动"）
 	var delay time.Duration
 	if execErr != nil {
-		delay = time.Duration(c.faultDelayMs) * time.Millisecond
+		delay = time.Duration(c.faultDelayMs)*time.Millisecond + randomJitter(0, 60)
 	} else {
-		delay = time.Duration(c.normalDelayMs) * time.Millisecond
+		delay = time.Duration(c.normalDelayMs)*time.Millisecond + randomJitter(0, 60)
 	}
 	if delay > 0 {
 		select {
@@ -260,7 +401,7 @@ func (c *BusinessCabin) Run(ctx context.Context, fn func(ctx context.Context) er
 		c.mu.Lock()
 		c.metrics.BusinessError += 1
 		c.mu.Unlock()
-		logTimelineEvent(c.name, "error", fmt.Sprintf("[%s]业务执行报错", c.name)) //canvas时序事件图功能
+		logTimelineEvent(c.name, "error", fmt.Sprintf("[%s]业务执行报错：%v", c.name, execErr)) //canvas时序事件图功能
 	} else {
 		c.mu.Lock()
 		c.metrics.Success += 1
@@ -355,9 +496,9 @@ func logTimelineEvent(cabinName string, evType string, msg string) {
 		Message: msg,
 	}
 	globalTimelineEvents = append(globalTimelineEvents, evt)
-	// 限制最大条数，防止内存暴涨
-	if len(globalTimelineEvents) > 200 {
-		globalTimelineEvents = globalTimelineEvents[len(globalTimelineEvents)-200:]
+	// 限制最大条数，防止内存暴涨（时序事件最多保留 600 条）
+	if len(globalTimelineEvents) > 600 {
+		globalTimelineEvents = globalTimelineEvents[len(globalTimelineEvents)-600:]
 	}
 }
 
@@ -378,23 +519,67 @@ func shouldProduceFault(cabinName string) bool {
 	return rand.Intn(100) < p
 }
 
+// ===== 真实世界风格的后端业务报错池：每个舱一组，随机命中 =====
+var bizErrorTemplates = map[string][]string{
+	"下单核心舱": {
+		"订单创建超时：DB 写入超时 (code=504, wait=3s, order=%d)",
+		"库存扣减失败：库存不足 (order=%d, sku=100023, stock=0)",
+		"数据库死锁：事务被回滚，请重试 (errno=1213, order=%d)",
+		"支付网关调用超时 (order=%d, gw=PAY-01, timeout=5s)",
+		"MySQL 连接池耗尽：无可用连接 (order=%d, pool=20, active=20, waiters=7)",
+		"下游订单中心 503 Service Unavailable (order=%d, svc=order-center)",
+		"消息发送失败：MQ 不可达 (order=%d, mq=rocketmq-prod, topic=order_create)",
+		"分布式锁获取失败：Redis 锁竞争超时 (order=%d, lock=sku_100023:stock, ttl=3s)",
+	},
+	"营销舱": {
+		"活动查询超时：select_activity_by_id 执行超时 3s (act=ACT_%d)",
+		"Redis 连接失败，缓存击穿回源 DB (act=ACT_%d, addr=10.0.1.8:6379, err=connection refused)",
+		"活动状态异常：活动已下架 (act=ACT_%d, status=OFFLINE)",
+		"优惠券服务 502 Bad Gateway (act=ACT_%d, svc=coupon-svc, upstream timeout)",
+		"重复提交：幂等键冲突 (act=ACT_%d, idem_key=ACT_%d-U-88)",
+		"风控校验拦截：命中限频策略 (act=ACT_%d, uid=U_88, rate=50/min)",
+		"活动配置解析失败：JSON 字段缺失 (act=ACT_%d, field=discount_rate)",
+		"DB 唯一键冲突：coupon_claim 已存在 (act=ACT_%d, uk=act_uid_coupon)",
+	},
+	"报表辅助舱": {
+		"大报表 SQL 超时被 kill：执行超过 30s (report=%d, sql_id=rpt_q3_revenue)",
+		"数据仓库连接失败 (report=%d, warehouse=clickhouse-prod, err=network unreachable)",
+		"聚合结果集过大：内存溢出风险被终止 (report=%d, rows=2.1M, est_mem=1.8GB)",
+		"报表导出失败：磁盘空间不足 (report=%d, disk=/data/report, free=12MB)",
+		"分析引擎 503 Service Unavailable (report=%d, engine=flink-job-7)",
+		"维度表关联超时：dim_sku 分片加载失败 (report=%d, shard=3)",
+		"HBase region 不可用：行键查询失败 (report=%d, table=rpt_daily, region=rs-02)",
+		"报表快照生成失败：ETL 任务未完成 (report=%d, job=etl_report_daily, status=RUNNING)",
+	},
+}
+
+// randomBizError 从指定舱的报错池中随机取一条真实风格错误
+func randomBizError(cabinName string, id int) error {
+	pool := bizErrorTemplates[cabinName]
+	if len(pool) == 0 {
+		return errors.New("service internal error")
+	}
+	tpl := pool[rand.Intn(len(pool))]
+	return errors.New(fmt.Sprintf(tpl, id))
+}
 func bizOrder(ctx context.Context, orderID int) error {
 	// time.Sleep(100 * time.Millisecond) //删掉！延时交给舱配置
+	if shouldProduceFault("下单核心舱") {
+		return randomBizError("下单核心舱", orderID)
+	}
 	fmt.Printf(colorGreen+"[下单核心舱] order=%d SUCCESS"+colorReset+"\n", orderID)
 	return nil
 }
-
 func bizMarketing(ctx context.Context, actID int) error {
 	if shouldProduceFault("营销舱") {
-		return errors.New("marketing db query timeout")
+		return randomBizError("营销舱", actID)
 	}
 	fmt.Printf(colorGreen+"[营销舱-查询] act=%d SUCCESS"+colorReset+"\n", actID)
 	return nil
 }
-
 func bizReport(ctx context.Context, reportID int) error {
 	if shouldProduceFault("报表辅助舱") {
-		return errors.New("report slow sql fail")
+		return randomBizError("报表辅助舱", reportID)
 	}
 	fmt.Printf(colorGreen+"[报表辅助舱] report=%d ok"+colorReset+"\n", reportID)
 	return nil
@@ -426,6 +611,21 @@ type CabinView struct {
 	//====新增熔断器窗口内部统计====
 	CbWindowSuccess uint64 `json:"cb_window_success"`
 	CbWindowFail    uint64 `json:"cb_window_fail"`
+	//====新增：Open 状态下距进入 HalfOpen 的真实剩余毫秒数（非 Open 为 0），供前端倒计时====
+	CbOpenRemainMs int64 `json:"cb_open_remain_ms"`
+}
+
+// cbOpenRemainMs 返回熔断器 Open 状态下距离进入 HalfOpen 的剩余毫秒数；非 Open 返回 0
+func cbOpenRemainMs(cb *CircuitBreaker) int64 {
+	if cb.GetState() != StateOpen {
+		return 0
+	}
+	elapsed := time.Since(time.UnixMilli(cb.lastOpenTime.Load()))
+	remain := cb.openWaitDuration - elapsed
+	if remain < 0 {
+		remain = 0
+	}
+	return int64(remain / time.Millisecond)
 }
 
 func getCabinConfig(c *BusinessCabin) CabinConfig {
@@ -437,6 +637,8 @@ func getCabinConfig(c *BusinessCabin) CabinConfig {
 		HalfOpenMaxProbe: c.cb.halfOpenMaxProbe, //新增
 		NormalDelayMs:    c.normalDelayMs,       //新增,正常情况延时ms
 		FaultDelayMs:     c.faultDelayMs,        //新增,故障情况延时ms
+		WindowType:       c.cb.windowType,       //新增：统计窗口类型
+		SlidingWindowSec: c.cb.slidingWindowSec, //新增：滑动窗口时长(秒)
 	}
 }
 
@@ -451,14 +653,19 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 		return cfg
 	}
 
+	orderSucc, orderFail := cabinOrder.cb.WindowStats()
+	marketingSucc, marketingFail := cabinMarketing.cb.WindowStats()
+	reportSucc, reportFail := cabinReport.cb.WindowStats()
+
 	list := []CabinView{
 		{
 			Name:            cabinOrder.name,
 			State:           cabinOrder.cb.GetState().String(),
 			Metrics:         cabinOrder.metrics,
 			Config:          getCabinConfig(cabinOrder),
-			CbWindowSuccess: cabinOrder.cb.successCount.Load(),
-			CbWindowFail:    cabinOrder.cb.failureCount.Load(),
+			CbWindowSuccess: orderSucc,
+			CbWindowFail:    orderFail,
+			CbOpenRemainMs:  cbOpenRemainMs(cabinOrder.cb),
 		},
 		{
 			Name:            cabinMarketing.name,
@@ -466,8 +673,9 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 			Metrics:         cabinMarketing.metrics,
 			Config:          getCabinConfig(cabinMarketing),
 			FaultConfig:     getFault("营销舱"),
-			CbWindowSuccess: cabinMarketing.cb.successCount.Load(),
-			CbWindowFail:    cabinMarketing.cb.failureCount.Load(),
+			CbWindowSuccess: marketingSucc,
+			CbWindowFail:    marketingFail,
+			CbOpenRemainMs:  cbOpenRemainMs(cabinMarketing.cb),
 		},
 		{
 			Name:            cabinReport.name,
@@ -475,8 +683,9 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 			Metrics:         cabinReport.metrics,
 			Config:          getCabinConfig(cabinReport),
 			FaultConfig:     getFault("报表辅助舱"),
-			CbWindowSuccess: cabinReport.cb.successCount.Load(),
-			CbWindowFail:    cabinReport.cb.failureCount.Load(),
+			CbWindowSuccess: reportSucc,
+			CbWindowFail:    reportFail,
+			CbOpenRemainMs:  cbOpenRemainMs(cabinReport.cb),
 		},
 	}
 
@@ -560,8 +769,20 @@ func apiApplyConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "参数非法：并发>=1，错误率1‑100，窗口>=1，等待秒>=1，半开试探数>=1，延时>=0", 400)
 		return
 	}
+	// 窗口类型校验：空值按 fixed（简单计数）处理；仅支持 fixed/sliding
+	if cfg.WindowType == "" {
+		cfg.WindowType = "fixed"
+	}
+	if cfg.WindowType != "sliding" && cfg.WindowType != "fixed" {
+		http.Error(w, "参数非法：统计窗口类型仅支持 fixed/sliding", 400)
+		return
+	}
+	// 滑动窗口时长缺省默认10秒（仅 window_type=sliding 生效；旧场景配置不携带该字段）
+	if cfg.SlidingWindowSec < 1 {
+		cfg.SlidingWindowSec = 10
+	}
 
-	newCb := NewCircuitBreaker(cfg.FailThreshold, cfg.WindowSize, time.Duration(cfg.OpenWaitSec)*time.Second, cfg.HalfOpenMaxProbe)
+	newCb := NewCircuitBreakerWindowType(cfg.WindowType, cfg.FailThreshold, cfg.WindowSize, time.Duration(cfg.OpenWaitSec)*time.Second, cfg.HalfOpenMaxProbe, cfg.SlidingWindowSec)
 
 	var newCabin *BusinessCabin
 	switch idx {
@@ -584,8 +805,12 @@ func apiApplyConfig(w http.ResponseWriter, r *http.Request) {
 	//	newCabin.name, cfg.MaxConcurrency, cfg.FailThreshold, cfg.WindowSize, cfg.OpenWaitSec,
 	//	cfg.HalfOpenMaxProbe, cfg.NormalDelayMs, cfg.FaultDelayMs))
 	// canvas时序事件图功能
-	logTimelineEvent("系统", "config", fmt.Sprintf("已更新配置：%s 最大并发=%d 错误阈值=%d%% 窗口=%d 熔断等待=%ds 半开试探=%d 正常耗时=%dms 故障耗时=%dms",
-		newCabin.name, cfg.MaxConcurrency, cfg.FailThreshold, cfg.WindowSize, cfg.OpenWaitSec,
+	windowTypeText := "简单计数窗口"
+	if cfg.WindowType == "sliding" {
+		windowTypeText = fmt.Sprintf("滑动统计窗口(%ds)", cfg.SlidingWindowSec)
+	}
+	logTimelineEvent("系统", "config", fmt.Sprintf("已更新配置：%s 最大并发=%d 错误阈值=%d%% 窗口=%d %s 熔断等待=%ds 半开试探=%d 正常耗时=%dms 故障耗时=%dms",
+		newCabin.name, cfg.MaxConcurrency, cfg.FailThreshold, cfg.WindowSize, windowTypeText, cfg.OpenWaitSec,
 		cfg.HalfOpenMaxProbe, cfg.NormalDelayMs, cfg.FaultDelayMs))
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	_, _ = w.Write([]byte(`{"ok":true}`))
@@ -629,7 +854,8 @@ func apiResetMetricsOnly(w http.ResponseWriter, r *http.Request) {
 }
 
 // randomJitter 生成 [minMs,maxMs] 之间随机毫秒时间
-// 总请求数 > 10 时，每提交一个任务，sleep 随机 50‑150ms，平缓的流量爬坡，而不是瞬间全部爆发
+// 用于业务RTT的"完成时序抖动"：请求全部并发提交（保持突发，让限流可见），
+// 由每个请求的随机耗时把泳道图完成事件自然错开，便于观察实验过程
 func randomJitter(minMs, maxMs int) time.Duration {
 	delta := maxMs - minMs
 	ms := minMs + rand.Intn(delta+1)
@@ -642,10 +868,8 @@ func apiRunFirst(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	g := NewSimpleErrGroup(ctx)
 
-	// 总请求数 > 20 时，每提交一个任务，sleep 随机 2‑10ms，平缓的流量爬坡，而不是瞬间全部爆发
-	totalFirst := firstBatchOrderCount + firstBatchMarketingCount + firstBatchReportCount
-	needJitter := totalFirst > 20
-
+	// 第一轮：全部请求并发提交（突发），限流/熔断效果才可见；
+	// 泳道图完成事件的错开由 Run() 内的 RTT 随机抖动实现
 	//下单核心舱
 	for i := 1; i <= firstBatchOrderCount; i++ {
 		oid := i
@@ -667,9 +891,6 @@ func apiRunFirst(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
-		if needJitter {
-			time.Sleep(randomJitter(2, 10))
-		}
 	}
 	//报表辅助舱
 	for i := 1; i <= firstBatchReportCount; i++ {
@@ -681,9 +902,6 @@ func apiRunFirst(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
-		if needJitter {
-			time.Sleep(randomJitter(2, 10))
-		}
 	}
 	_ = g.Wait()
 	// onEventLog("第一轮请求执行完毕")
@@ -708,9 +926,9 @@ func apiRunSecond(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	g2 := NewSimpleErrGroup(ctx)
 	startRID := 1000
-	// 总请求数 > 10 时，每提交一个任务，sleep 随机 50‑150ms，平缓的流量爬坡，而不是瞬间全部爆发
-	needJitter := secondBatchReportCount > 10
 
+	// 第二轮（半开试探）：全部并发提交，半开试探可瞬时打满试探配额；
+	// 泳道图完成事件的错开由 Run() 内的 RTT 随机抖动实现
 	for i := 0; i < secondBatchReportCount; i++ {
 		rid := startRID + i
 		g2.Go(func(ctx context.Context) error {
@@ -720,10 +938,6 @@ func apiRunSecond(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		})
-		// 总请求数 > 10 时，每提交一个任务，sleep 随机 50‑150ms，平缓的流量爬坡，而不是瞬间全部爆发
-		if needJitter {
-			time.Sleep(randomJitter(50, 150))
-		}
 	}
 	_ = g2.Wait()
 	// onEventLog("第二轮（半开试探）请求执行完毕")
@@ -769,8 +983,35 @@ func init() {
 	resetAllCabins()
 }
 
+// func main() {
+// 	http.Handle("/", http.FileServer(http.Dir(".")))
+// 	http.HandleFunc("/api/status", apiStatus)
+// 	http.HandleFunc("/api/applyConfig", apiApplyConfig)
+// 	http.HandleFunc("/api/reset", apiReset)
+// 	http.HandleFunc("/api/runFirst", apiRunFirst)
+// 	http.HandleFunc("/api/waitHalfOpen", apiWaitHalfOpen)
+// 	http.HandleFunc("/api/runSecond", apiRunSecond)
+// 	http.HandleFunc("/api/setFault", apiSetFault)
+// 	http.HandleFunc("/api/clearLogs", apiClearLogs)
+// 	http.HandleFunc("/api/resetMetricsOnly", apiResetMetricsOnly)
+
+// 	onEventLog("演示程序已启动")
+// 	fmt.Println("网页演示已启动，请浏览器打开：http://127.0.0.1:8080")
+// 	_ = http.ListenAndServe(":8080", nil)
+// }
+
 func main() {
-	http.Handle("/", http.FileServer(http.Dir(".")))
+	// 【替换原来 http.FileServer】：手动处理根路径，输出打包在exe里面的html字节
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			w.Header().Set("Content‑Type", "text/html;charset=utf‑8")
+			_, _ = w.Write(embedIndexHTML) // 输出打包进程序的html内容
+			return
+		}
+		http.NotFound(w, r) // 别的路径直接返回404，不再读取磁盘任何文件
+	})
+
+	// ========= 下面所有的api接口注册【一行都不要动，原样保留】=========
 	http.HandleFunc("/api/status", apiStatus)
 	http.HandleFunc("/api/applyConfig", apiApplyConfig)
 	http.HandleFunc("/api/reset", apiReset)
