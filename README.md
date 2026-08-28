@@ -1,8 +1,14 @@
 # go‑watertight‑cabin‑demo
+> 
+> 项目名：软件水密隔舱演示（限流 · 熔断 · 降级 · 故障注入）
+> 英文名：go-watertight-cabin-demo
 > 主旨句：一个舱进水，整艘船不沉。演示故障隔离原理，看单个故障如何不拖垮整体应用。
-> Go 实现的网页可视化教学 Demo，演示水密隔舱模式（Bulkhead）+ 信号量并发限流 + 熔断器 CircuitBreaker + 业务降级 Fallback + 网页故障注入。
 >
-> 非开发人员仅靠点击按钮、修改网页数字就可以理解分布式故障隔离原理。
+> 非开发人员仅靠点击按钮、修改网页数字就可以理解分布式故障隔离原理。  
+> 类比轮船水密隔舱：单个舱故障进水，不会造成整艘船沉没；业务模块故障，不会把整个应用拖垮，实现故障隔离。
+> 
+> Go 实现的网页可视化教学 Demo，演示水密隔舱模式（Bulkhead）+ 信号量并发限流 + 熔断器 CircuitBreaker + 业务降级 Fallback + 网页故障注入。
+> 
 
 [![Go Version](https://img.shields.io/badge/Go-1.26.6-00ADD8?style=for-the-badge&logo=go)](https://go.dev/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)](LICENSE)
@@ -139,7 +145,8 @@ go tool cover -html=cover.out
 ```
 
 ## 📚 文档
-- [软件水密隔舱（限流+熔断+降级+故障注入）文档.md]([软件水密隔舱（限流+熔断+降级+故障注入）文档.md](https://github.com/andy0792/go-watertight-cabin-demo/blob/main/%E8%BD%AF%E4%BB%B6%E6%B0%B4%E5%AF%86%E9%9A%94%E8%88%B1%EF%BC%88%E9%99%90%E6%B5%81%20%2B%20%E7%86%94%E6%96%AD%20%2B%20%E9%99%8D%E7%BA%A7%20%2B%20%E6%95%85%E9%9A%9C%E6%B3%A8%E5%85%A5%EF%BC%89%E6%96%87%E6%A1%A3.md))：完整技术文档，包含概念讲解、实验指南、调参参考、坑点答疑、关键源码解析。
+- [软件水密隔舱（限流+熔断+降级+故障注入）文档.md](./docs/软件水密隔舱（限流+熔断+降级+故障注入）文档.md)：完整技术文档，包含概念讲解、实验指南、调参参考、坑点答疑、关键源码解析。
+- [拓展阅读：限流熔断降级‑现代工业进阶](./docs/限流熔断降级‑现代工业进阶.md)
 
 ## ✨ 特性亮点
 - 🎨 可视化教学：舱卡片底色跟随熔断器状态变色；Canvas时序泳道图图形化展示事件流；支持事件堆叠、聚合、过滤。
