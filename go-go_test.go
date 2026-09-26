@@ -606,6 +606,7 @@ func TestApiStatusOpenRemainMs(t *testing.T) {
 	}
 	cabinReport.cb.state.Store(int32(StateClosed))
 }
+
 // TestRandomBizErrorPool 校验真实世界风格报错池：命中模板、带请求ID
 func TestRandomBizErrorPool(t *testing.T) {
 	for _, cabin := range []string{"下单核心舱", "营销舱", "报表辅助舱"} {
@@ -623,6 +624,7 @@ func TestRandomBizErrorPool(t *testing.T) {
 		t.Error("未知舱名应返回兜底内部错误")
 	}
 }
+
 // TestCircuitBreaker_TransitionLogOnce 校验熔断切换点日志 + CAS防重
 func TestCircuitBreaker_TransitionLogOnce(t *testing.T) {
 	// Closed→Open：日志应带窗口失败率且只记录一次
@@ -669,6 +671,7 @@ func TestCircuitBreaker_TransitionLogOnce(t *testing.T) {
 		t.Errorf("Open→HalfOpen切换日志应恰好1条（CAS防重），got %d", halfOpenCnt)
 	}
 }
+
 // TestRunErrorLogDetail 校验Run报错日志带上真实错误详情（报错池改造）
 func TestRunErrorLogDetail(t *testing.T) {
 	resetTimelineEvents()
